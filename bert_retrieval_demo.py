@@ -1,27 +1,25 @@
 import argparse
 import json
 import os
-import pickle
 import sys
-
 import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModel
-from sklearn.metrics.pairwise import cosine_similarity
+
+# Import cache_db functions for caching
+import cache_db
 
 # --------------------------------------------------------------------------
 # 0. Parse command-line args for optional --rebuild
 # --------------------------------------------------------------------------
-parser = argparse.ArgumentParser(description="BERT-based diff retrieval with optional AST & caching")
-parser.add_argument("--rebuild", action="store_true", help="force rebuilding the embedding index")
+parser = argparse.ArgumentParser(description="AST-based diff retrieval with SQLite caching")
+parser.add_argument("--rebuild", action="store_true", help="Force rebuilding the embedding index")
 args = parser.parse_args()
 
 # --------------------------------------------------------------------------
 # 1. Configuration
 # --------------------------------------------------------------------------
 DATA_FILE = "preprocessed_data.json"
-CACHE_EMB = "cached_embeddings.npy"  # stores embeddings as NumPy array
-CACHE_ITEMS = "cached_items.pkl"     # stores the associated metadata list
 MODEL_NAME = r"C:\sai\HPE\projects\project 2\cloned repo\P2-PR-Reviewer-Recommendation\bert-base-uncased"
 
 # --------------------------------------------------------------------------
@@ -29,33 +27,27 @@ MODEL_NAME = r"C:\sai\HPE\projects\project 2\cloned repo\P2-PR-Reviewer-Recommen
 # --------------------------------------------------------------------------
 try:
     import clang.cindex
-    # If you installed LLVM in this location, uncomment or adjust as needed:
     clang.cindex.Config.set_library_file(r"C:\Program Files\LLVM\bin\libclang.dll")
     CLANG_AVAILABLE = True
 except ImportError:
     CLANG_AVAILABLE = False
 
 def parse_cpp_ast(code_text: str) -> str:
-    """Attempt to parse code_text with clang and return a textual summary of AST declarations."""
+    """Parse code_text with clang and return a textual summary of AST declarations."""
     if not CLANG_AVAILABLE:
         return ""
-
     import tempfile
     with tempfile.NamedTemporaryFile(suffix=".cpp", delete=False) as tmp:
         tmp.write(code_text.encode("utf-8"))
         tmp_path = tmp.name
-
     try:
         index = clang.cindex.Index.create()
         tu = index.parse(tmp_path, args=['-std=c++11'])
-    except Exception as e:
-        # Could fail if code_text is incomplete or clang doesn't like it
+    except Exception:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
         return ""
-
     ast_info = []
-
     def visitor(node):
         try:
             if node.kind.is_declaration():
@@ -63,130 +55,118 @@ def parse_cpp_ast(code_text: str) -> str:
                 kind = str(node.kind)
                 ast_info.append(f"({kind}:{name})")
         except ValueError:
-            # e.g. unknown node kind
             return
-        for c in node.get_children():
-            visitor(c)
-
+        for child in node.get_children():
+            visitor(child)
     try:
         visitor(tu.cursor)
     except ValueError:
         pass
-
     if os.path.exists(tmp_path):
         os.remove(tmp_path)
     return " ".join(ast_info)
 
 # --------------------------------------------------------------------------
-# 3. BERT embedder
+# 3. Embedder using a Transformer Model
 # --------------------------------------------------------------------------
 class BERTEmbedder:
     def __init__(self, model_path=MODEL_NAME):
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.model = AutoModel.from_pretrained(model_path)
         self.model.eval()
-        # If you have a GPU, uncomment:
+        # Uncomment below if using a GPU:
         # self.model.cuda()
 
     def embed_text(self, text: str, max_length=512) -> np.ndarray:
         inputs = self.tokenizer(text, return_tensors='pt', truncation=True, max_length=max_length)
-        # If on GPU:
-        # inputs = {k: v.cuda() for k, v in inputs.items()}
         with torch.no_grad():
             outputs = self.model(**inputs)
-        # Take the [CLS] token embedding
+        # Use the [CLS] token representation as the embedding.
         cls_vec = outputs.last_hidden_state[:, 0, :]
         return cls_vec.cpu().numpy().squeeze(0)
 
 embedder = BERTEmbedder()
 
 # --------------------------------------------------------------------------
-# 4. Building or Loading the Index
+# 4. Building the Embedding Index with Cache DB
 # --------------------------------------------------------------------------
 def build_index():
-    """Reads preprocessed_data.json, does AST parsing + BERT embeddings for each record, caches the result."""
+    """
+    Reads preprocessed_data.json, computes (or loads cached) embeddings for each record,
+    and returns the embeddings list along with the associated metadata.
+    """
     if not os.path.exists(DATA_FILE):
         print(f"ERROR: {DATA_FILE} not found.")
         sys.exit(1)
-
+    
+    # Initialize the cache DB
+    cache_conn = cache_db.init_cache_db()
+    
     with open(DATA_FILE, 'r', encoding='utf-8') as f:
         data = json.load(f)
-
+    
     items = []
     embedding_list = []
-
-    print(f"Building the index from scratch (found {len(data)} records). This may take a while...")
-
+    
+    print(f"Building index from scratch (processing {len(data)} records)...")
     for i, entry in enumerate(data):
         if i % 50 == 0:
-            print(f"  -> Processing record {i}/{len(data)}")
-
+            print(f"  Processing record {i}/{len(data)}")
+        
         diff_text = entry.get("diff_text", "")
         comment_text = entry.get("comment_text", "")
         filename = entry.get("filename", "")
-
-        # If it's a C/C++ file, parse AST
+        
+        # For C/C++ files, get AST summary.
         ast_str = ""
         if CLANG_AVAILABLE and filename.endswith((".c", ".cpp", ".cc", ".h", ".hpp")):
             ast_str = parse_cpp_ast(diff_text)
-
-        # Combine diff + AST + comment
+        
+        # Combine text fields for embedding.
         combined_str = diff_text + "\n" + ast_str + "\n" + comment_text
-        emb = embedder.embed_text(combined_str)
-        embedding_list.append(emb)
+        # Compute a unique key (checksum) for this combined text.
+        key = cache_db.compute_checksum(combined_str)
+        
+        # Attempt to load a cached embedding.
+        embedding = cache_db.get_cached_embedding(cache_conn, key)
+        if embedding is None or args.rebuild:
+            # Not in cache (or rebuild forced): compute embedding.
+            embedding = embedder.embed_text(combined_str)
+            # Save embedding to cache DB.
+            cache_db.save_cached_embedding(cache_conn, key, embedding, combined_str)
+        
+        embedding_list.append(embedding)
         items.append(entry)
-
-    # Convert to numpy array
+    
+    # Convert list of embeddings to a NumPy array.
     embeddings = np.vstack(embedding_list)
-
-    # Cache results
-    np.save(CACHE_EMB, embeddings)
-    with open(CACHE_ITEMS, 'wb') as f:
-        pickle.dump(items, f)
-    print("Index built and cached to disk.")
+    cache_conn.close()
+    print("Index built using cache database.")
     return embeddings, items
 
-def load_index():
-    """Loads the cached embeddings and metadata if they exist."""
-    if not (os.path.exists(CACHE_EMB) and os.path.exists(CACHE_ITEMS)):
-        return None, None
-    embeddings = np.load(CACHE_EMB)
-    with open(CACHE_ITEMS, 'rb') as f:
-        items = pickle.load(f)
-    return embeddings, items
-
-# Decide whether to build or load
-if args.rebuild:
-    EMBEDDINGS, ITEMS = build_index()
-else:
-    EMBEDDINGS, ITEMS = load_index()
-    if EMBEDDINGS is None or ITEMS is None:
-        EMBEDDINGS, ITEMS = build_index()
-
-print(f"Index is ready. We have {len(ITEMS)} diffs loaded.\n")
+# For this design, we always build the index by checking the DB cache.
+EMBEDDINGS, ITEMS = build_index()
+print(f"Index is ready. Total records: {len(ITEMS)}\n")
 
 # --------------------------------------------------------------------------
-# 5. Retrieval
+# 5. Retrieval: Cosine Similarity-based Matching
 # --------------------------------------------------------------------------
 def l2_normalize(vec: np.ndarray) -> np.ndarray:
     norm = np.linalg.norm(vec, axis=1, keepdims=True) + 1e-10
     return vec / norm
 
 def retrieve_similar(user_diff: str, top_k=3) -> list:
-    """Embed the user's new snippet, do cosine similarity vs. all embeddings, return top_k results."""
-    # Create user embedding
+    """
+    Given a user-provided diff snippet, compute its embedding
+    and retrieve the top_k most similar records based on cosine similarity.
+    """
     user_vec = embedder.embed_text(user_diff).reshape(1, -1)
-
-    # Cosine similarity
-    # We'll L2 normalize everything first
     user_norm = l2_normalize(user_vec)
     stored_norm = l2_normalize(EMBEDDINGS)
-    scores = stored_norm.dot(user_norm[0])  # shape (N,)
-
-    # Sort by descending similarity
+    scores = stored_norm.dot(user_norm[0])
     idx_sorted = np.argsort(-scores)
     top_indices = idx_sorted[:top_k]
-
+    
     results = []
     for idx in top_indices:
         score = float(scores[idx])
@@ -194,25 +174,23 @@ def retrieve_similar(user_diff: str, top_k=3) -> list:
     return results
 
 # --------------------------------------------------------------------------
-# 6. Main Interactive Loop
+# 6. Interactive Retrieval Loop
 # --------------------------------------------------------------------------
 def main():
     print("Paste a diff snippet (or code). Then press Ctrl+D (Linux/Mac) or Ctrl+Z + Enter (Windows).")
     user_input = sys.stdin.read().strip()
     if not user_input:
-        print("No input. Exiting.")
+        print("No input provided. Exiting.")
         return
-
     top_matches = retrieve_similar(user_input, top_k=3)
-
     print("\n=== Top Matches ===")
     for rank, (score, item) in enumerate(top_matches, start=1):
-        snippet  = item["diff_text"][:150].replace("\n", " ")
-        comment  = item["comment_text"]
+        snippet = item["diff_text"][:150].replace("\n", " ")
+        comment = item["comment_text"]
         filename = item.get("filename", "")
         print(f"Rank #{rank} | Score={score:.4f} | File={filename}")
         print(f"  Matched Diff Snippet: {snippet}...")
-        print(f"  Original Reviewer Comment: {comment}")
+        print(f"  Reviewer Comment: {comment}")
         print("-" * 50)
 
 if __name__ == "__main__":

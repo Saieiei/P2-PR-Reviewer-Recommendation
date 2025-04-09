@@ -4,9 +4,8 @@ collect_pr_data.py (Descending Order)
 1. Reads your GitHub config (token, owner, repo) and date range (start_date, end_date) from config.ini.
 2. Connects to GitHub via PyGithub.
 3. Creates/opens an SQLite DB and sets up tables if needed.
-4. Fetches PRs in descending order by creation date, only processing those within [start_date, end_date].
+4. Fetches PRs in descending order by created date, only processing those within [start_date, end_date].
 5. Stores each PR's metadata, file diffs, and comments.
-
 To run:
     python collect_pr_data.py
 """
@@ -36,6 +35,9 @@ def main():
     # Convert strings to naive datetime objects (no timezone)
     start_date = datetime.strptime(start_str, "%Y-%m-%d")
     end_date = datetime.strptime(end_str, "%Y-%m-%d")
+
+    print("Starting PR collection ...")
+    print(f"Processing PRs created between {start_date.strftime('%Y-%m-%d')} and {end_date.strftime('%Y-%m-%d')}", flush=True)
 
     # -------------------------------------------------------------
     # 2. Connect to GitHub
@@ -91,12 +93,11 @@ def main():
 
     # -------------------------------------------------------------
     # 4. Fetch Pull Requests in DESC order by created date
-    #
-    # This helps us quickly skip older PRs once we pass start_date.
-    # We'll compare creation dates to [start_date, end_date].
     # -------------------------------------------------------------
     pulls = repo.get_pulls(state="all", sort="created", direction="desc")
     pr_count = 0
+
+    print("Fetching PRs from GitHub ...", flush=True)
 
     for pr in pulls:
         created_utc = pr.created_at
@@ -122,6 +123,9 @@ def main():
         state = pr.state
         labels_str = ",".join([label.name for label in pr.labels])
 
+        # Print progress for each PR
+        print(f"Processing PR #{pr_number} created on {created_at_str}", flush=True)
+
         # Insert into PullRequests
         cursor.execute("""
             INSERT INTO PullRequests
@@ -136,7 +140,6 @@ def main():
         for f in files:
             filename = f.filename
             diff_text = f.patch or ""
-
             cursor.execute("""
                 INSERT INTO PRFiles (pr_id, filename, diff_text)
                 VALUES (?, ?, ?)
@@ -164,15 +167,19 @@ def main():
         conn.commit()
         pr_count += 1
 
+        # Print an update every 10 PRs processed
+        if pr_count % 10 == 0:
+            print(f"Total PRs processed so far: {pr_count}", flush=True)
+
         # Optionally reduce or remove the sleep if you want maximum speed
-        time.sleep(0.2)
+        #time.sleep(0.2)
 
     # -------------------------------------------------------------
     # 5. Done
     # -------------------------------------------------------------
     conn.close()
     print(f"Done! Inserted {pr_count} PRs into {DB_NAME} for the range "
-          f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}.")
+          f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}.", flush=True)
 
 
 if __name__ == "__main__":
