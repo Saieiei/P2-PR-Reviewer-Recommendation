@@ -20,7 +20,7 @@ args = parser.parse_args()
 # 1. Configuration
 # --------------------------------------------------------------------------
 DATA_FILE = "preprocessed_data.json"
-MODEL_NAME = r"C:\sai\HPE\projects\project 2\cloned repo\P2-PR-Reviewer-Recommendation\bert-base-uncased"
+MODEL_NAME = "bert-base-uncased"
 
 # --------------------------------------------------------------------------
 # 2. Optional clang-based AST parsing

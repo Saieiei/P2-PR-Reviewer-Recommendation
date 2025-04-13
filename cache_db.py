@@ -15,9 +15,16 @@ CACHE_DB_PATH = "cache.db"
 def init_cache_db():
     """
     Initializes the cache database and creates the CachedEmbeddings table if it doesn't exist.
-    Returns a connection object.
+    Returns a connection object with a 30-second timeout, busy_timeout set, and an attempt to enable WAL mode.
     """
-    conn = sqlite3.connect(CACHE_DB_PATH)
+    # Open the connection in autocommit mode (isolation_level=None) with a 30-second timeout.
+    conn = sqlite3.connect(CACHE_DB_PATH, timeout=30, isolation_level=None)
+    # Set busy timeout so SQLite waits longer for locks to clear.
+    conn.execute("PRAGMA busy_timeout = 30000;")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+    except sqlite3.OperationalError as e:
+        print("Warning: Could not set WAL mode due to:", e)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS CachedEmbeddings (
