@@ -1,118 +1,159 @@
+# -*- coding: utf-8 -*-
 """
-prep_data.py
+prep_data.py  –  scrape + clean + keep suggested‑patches
 
-Purpose:
-  1. Reads from the pull_requests.db database, which contains tables:
-     - PullRequests (metadata)
-     - PRFiles (diff_text per file)
-     - PRComments (comments from reviewers)
-  2. Joins these tables to gather (diff, comment) pairs.
-  3. Filters out trivial or empty data.
-  4. Saves cleaned examples to preprocessed_data.json (for retrieval-based usage).
+1. Read from pull_requests.db (PullRequests, PRFiles, PRComments).
+2. For every *useful* review comment, emit a JSON record:
+      diff_text, comment_text, suggestion_text, filename, commenter, …
+3. Trivial “LGTM / thanks / 👍” comments are skipped *unless* they contain a
+   fenced GitHub *suggested‑change* block (```suggestion …```).
 
-Usage:
-  python prep_data.py
+Run:
+    python prep_data.py
 """
 
-import sqlite3
 import json
 import os
+import re
+import sqlite3
+from typing import Dict, List
 
 DB_NAME = "pull_requests.db"
 OUTPUT_JSON = "preprocessed_data.json"
-BATCH_SIZE = 1000  # How many rows to process before printing a progress update
+BATCH_SIZE = 1_000
+
+# ------------------------------------------------------------------ #
+# 1)  Helpers – trivial‑comment detection & suggestion extraction    #
+# ------------------------------------------------------------------ #
+_TRIVIAL_PATTERNS = [
+    r"^\s*lgtm\s*[.!]*$",
+    r"^\s*looks\s+good\s+to\s+me\s*[.!]*$",
+    r"^\s*approved\s*[.!]*$",
+    r"^\s*ship\s+it\s*[.!]*$",
+    r"^\s*thanks[,!.]*\s*$",
+    r"^\s*thank\s+you[,!.]*\s*$",
+    r"^\s*done[,!.]*\s*$",
+    r"^\s*nit\b.*$",
+    r"^\s*\+1\s*$",
+]
+_TRIVIAL_RE = [re.compile(pat, re.I) for pat in _TRIVIAL_PATTERNS]
+
+_SUGG_RE = re.compile(r"```suggestion.*?\n(.*?)```", re.S | re.I)
+
+
+def extract_suggestion(text: str) -> str:
+    """Return concatenated suggested‑patch blocks or ''."""
+    blocks = _SUGG_RE.findall(text or "")
+    return "\n\n".join(b.strip() for b in blocks)
+
+
+def is_trivial(text: str) -> bool:
+    """True if *text* is a low‑value one‑liner (emoji, thanks, LGTM …)."""
+    txt = (text or "").strip()
+    if len(txt) < 5 and not extract_suggestion(txt):
+        return True
+    for pat in _TRIVIAL_RE:
+        if pat.match(txt):
+            return True
+    # All‑emoji / no alphanumerics
+    if not re.search(r"[A-Za-z0-9]", txt):
+        return True
+    return False
+
+
+# ------------------------------------------------------------------ #
+# 2)  DB → cleaned JSON                                              #
+# ------------------------------------------------------------------ #
+def process_rows(rows, out: List[Dict], total: int, kept: int):
+    for row in rows:
+        total += 1
+        if total % BATCH_SIZE == 0:
+            print(f"Processed {total:,} rows; kept {kept:,} examples.")
+
+        (
+            pr_number,
+            pr_title,
+            pr_desc,
+            filename,
+            diff_text,
+            commenter,
+            comment_text,
+            comment_file,
+            comment_line,
+            created_at,
+        ) = row
+
+        diff_text = (diff_text or "").strip()
+        comment_text = (comment_text or "").strip()
+        suggestion_text = extract_suggestion(comment_text)
+
+        if not diff_text or (is_trivial(comment_text) and not suggestion_text):
+            continue  # useless
+
+        out.append(
+            {
+                "pr_number": pr_number,
+                "title": pr_title or "",
+                "description": pr_desc or "",
+                "filename": filename or "",
+                "diff_text": diff_text,
+                "commenter": commenter or "",
+                "comment_text": comment_text,
+                "suggestion_text": suggestion_text,
+                "comment_file_path": comment_file,
+                "comment_line_num": comment_line,
+                "comment_created_at": created_at,
+            }
+        )
+        kept += 1
+    return total, kept
+
 
 def main():
-    # Ensure the DB file exists
     if not os.path.exists(DB_NAME):
-        print(f"Database file '{DB_NAME}' not found.")
+        print(f"DB '{DB_NAME}' not found.")
         return
 
-    print("Connecting to the database...")
     conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
-    # Prepare the SQL query (joining the three tables)
-    query = """
-    SELECT
-        PullRequests.pr_number,
-        PullRequests.title,
-        PullRequests.description,
-        PRFiles.filename,
-        PRFiles.diff_text,
-        PRComments.commenter,
-        PRComments.comment_text,
-        PRComments.file_path,
-        PRComments.line_number,
-        PRComments.created_at
-    FROM PullRequests
-    JOIN PRFiles ON PullRequests.id = PRFiles.pr_id
-    JOIN PRComments ON PullRequests.id = PRComments.pr_id
+    # Comments whose file_path matches the file they belong to
+    q1 = """
+    SELECT p.pr_number, p.title, p.description,
+           f.filename, f.diff_text,
+           c.commenter, c.comment_text,
+           c.file_path, c.line_number, c.created_at
+    FROM PullRequests  p
+    JOIN PRFiles       f ON p.id = f.pr_id
+    JOIN PRComments    c ON c.pr_id = p.id AND c.file_path = f.filename
     """
-    
-    print("Executing SQL query...")
-    rows = cursor.execute(query)
 
-    data_examples = []
-    total_rows = 0
-    kept_examples = 0
+    # Orphan comments (no file_path)
+    q2 = """
+    SELECT p.pr_number, p.title, p.description,
+           '', '',                   -- filename, diff_text
+           c.commenter, c.comment_text,
+           c.file_path, c.line_number, c.created_at
+    FROM PullRequests p
+    JOIN PRComments  c ON c.pr_id = p.id
+    WHERE c.file_path IS NULL
+    """
 
-    # Process rows one by one to provide live updates
-    for row in rows:
-        total_rows += 1
-
-        # Print progress update at each batch interval
-        if total_rows % BATCH_SIZE == 0:
-            print(f"Processed {total_rows} rows so far; kept {kept_examples} examples.")
-
-        # Unpack row data
-        pr_number       = row[0]
-        pr_title        = row[1] or ""
-        pr_description  = row[2] or ""
-        filename        = row[3] or ""
-        diff_text       = row[4] or ""
-        commenter       = row[5] or ""
-        comment_text    = row[6] or ""
-        comment_file    = row[7]  # could be None
-        comment_line    = row[8]  # could be None
-        comment_created = row[9]  # expected as string e.g. "2025-03-30 12:34:56"
-
-        # Clean text data
-        diff_text = diff_text.strip()
-        comment_text = comment_text.strip()
-
-        # Skip empty diffs
-        if not diff_text:
-            continue
-
-        # Skip trivial comments (e.g., less than 5 characters)
-        if len(comment_text) < 5:
-            continue
-
-        # Build the cleaned example dictionary
-        example = {
-            "pr_number": pr_number,
-            "title": pr_title,
-            "description": pr_description,
-            "filename": filename,
-            "diff_text": diff_text,
-            "commenter": commenter,
-            "comment_text": comment_text,
-            "comment_file_path": comment_file,
-            "comment_line_num": comment_line,
-            "comment_created_at": comment_created
-        }
-        data_examples.append(example)
-        kept_examples += 1
-
+    examples: List[Dict] = []
+    total = kept = 0
+    print("Querying file‑matched comments …")
+    total, kept = process_rows(cur.execute(q1), examples, total, kept)
+    print("Querying orphan comments …")
+    total, kept = process_rows(cur.execute(q2), examples, total, kept)
     conn.close()
 
-    # Write the cleaned data to JSON
-    with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(data_examples, f, indent=2, ensure_ascii=False)
+    print("Writing JSON …")
+    with open(OUTPUT_JSON, "w", encoding="utf-8") as fp:
+        json.dump(examples, fp, ensure_ascii=False, indent=2)
 
-    print(f"Finished processing. Total rows processed: {total_rows}.")
-    print(f"Done! Wrote {kept_examples} examples to {OUTPUT_JSON}.")
+    print(f"Done. Visited {total:,} DB rows, wrote {kept:,} examples → {OUTPUT_JSON}.")
+
 
 if __name__ == "__main__":
     main()
+
