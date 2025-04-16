@@ -3,9 +3,10 @@
 """
 BERT + Chroma diff‑retrieval – **v2 (suggestion‑aware)**
 -------------------------------------------------------
-* Embeds diff + AST + suggestion_text
-* Skips trivial “Thanks / LGTM …” results unless they have a suggestion
-* Shows suggestion first (fallback to comment)
+* Embeds diff + AST + suggestion_text.
+* Skips trivial “Thanks / LGTM …” results unless they have a suggestion.
+* Shows suggestion first (fallback to comment).
+* Also displays the PR labels (from pull_requests.db).
 """
 
 import argparse
@@ -27,7 +28,7 @@ from transformers import AutoModel, AutoTokenizer
 parser = argparse.ArgumentParser(description="Fast BERT + Chroma diff retrieval")
 parser.add_argument("--batch", type=int, default=64)
 parser.add_argument("--rebuild", action="store_true")
-parser.add_argument("--top-k", type=int, default=3)
+parser.add_argument("--top-k", type=int, default=5)
 parser.add_argument("--disable-ast", action="store_true")
 args = parser.parse_args()
 
@@ -166,11 +167,13 @@ def build_index():
             continue
         ids.append(cid)
         docs.append(text)
+        # Include the extra "labels" field in the metadata.
         metas.append({
             "filename": fn,
             "commenter": rec.get("commenter", ""),
             "comment_text": rec.get("comment_text", ""),
             "suggestion_text": sugg,
+            "labels": rec.get("labels", ""),
         })
         seen.add(cid)
         if len(ids) >= args.batch:
@@ -191,32 +194,40 @@ def retrieve(diff: str, k: int):
 # ---------------- Interactive ----------------
 def read_multiline(prompt="Paste diff/code (end with EOF):"):
     print(prompt)
-    lines=[]
+    lines = []
     while True:
-        try: ln = input()
-        except EOFError: return ""
-        if ln.strip()=="EOF": break
+        try:
+            ln = input()
+        except EOFError:
+            return ""
+        if ln.strip() == "EOF":
+            break
         lines.append(ln)
     return "\n".join(lines)
 
 def best_payload(meta):
-    return meta.get("suggestion_text") or meta.get("comment_text","")
+    return meta.get("suggestion_text") or meta.get("comment_text", "")
 
 def main():
     build_index()
     while True:
         diff = read_multiline()
-        if not diff.strip(): break
+        if not diff.strip():
+            break
         rank = 0
-        for score, meta in retrieve(diff, args.top_k*2):  # ask for a few more to filter
+        for score, meta in retrieve(diff, args.top_k * 2):  # retrieve extra for filtering
             payload = best_payload(meta)
-            if not payload.strip(): continue
+            if not payload.strip():
+                continue
             if is_trivial(payload) and not meta.get("suggestion_text"):
                 continue
             rank += 1
-            print(f"#{rank}  sim={score:+.3f}  {meta['filename']}  {meta['commenter']}\n    {payload.splitlines()[0][:120]}")
-            if rank >= args.top_k: break
-        if input("Test another? (y/n): ").lower()!="y": break
+            # Print file, commenter, labels (from pull_requests.db), and the payload preview.
+            print(f"#{rank}  sim={score:+.3f}  file={meta['filename']}  commenter={meta['commenter']}  labels={meta.get('labels', '')}\n    {payload.splitlines()[0][:120]}")
+            if rank >= args.top_k:
+                break
+        if input("Test another? (y/n): ").lower() != "y":
+            break
     print("Done.")
 
 if __name__ == "__main__":
