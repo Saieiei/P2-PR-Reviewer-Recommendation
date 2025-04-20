@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Precision-focused CodeBERT + Chroma diff retrieval (v6, with AST‑score output and full‑payload printing)
+Precision-focused CodeBERT + Chroma diff retrieval (v6, file‑filtered in Python)
 
 Features:
 - Fast Rust tokenizer (use_fast=True)
@@ -9,28 +9,17 @@ Features:
 - AST results cached on disk
 - Incremental indexing (--update) & full rebuild (--rebuild)
 - Batched embedding (default batch=256)
+- File‑level metadata filtering via Chroma’s supported operators
 - Adaptive similarity threshold
-- Explainability: prints base, text‑embedding, AST‑embedding, file/label boosts, rerank
-- Prints the **entire** suggestion/comment payload, not just a truncated preview
-- Intent‑aware filtering: preserves “please…”, “can you…?”, etc.
+- Drops pure‑punctuation payloads (e.g. just "}")
+- Prints full payload (suggestion or comment)
 """
 
-from __future__ import annotations
-import argparse
-import hashlib
-import json
-import os
-import platform
-import re
-import shutil
-import sys
-import tempfile
+import argparse, hashlib, json, os, platform, re, shutil, sys, tempfile
 from pathlib import Path
 from typing import List, Dict
 
-import ijson
-import numpy as np
-import torch
+import ijson, numpy as np, torch
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 from chromadb import PersistentClient
@@ -39,37 +28,37 @@ from chromadb import PersistentClient
 # CLI
 # -----------------------------------------------------------------------------
 parser = argparse.ArgumentParser("Precision-focused CodeBERT + Chroma diff retrieval")
-parser.add_argument("--batch",      type=int,      default=256, help="embedding batch size")
-parser.add_argument("--rebuild",    action="store_true",   help="wipe & rebuild index")
-parser.add_argument("--update",     action="store_true",   help="incrementally index new records only")
-parser.add_argument("--top-k",      type=int,      default=5,   help="results to show")
-parser.add_argument("--disable-ast",action="store_true",   help="skip AST parsing")
-parser.add_argument("--rerank",     action="store_true",   help="apply cross‑encoder reranking")
+parser.add_argument("--batch",      type=int,      default=256,    help="embedding batch size")
+parser.add_argument("--rebuild",    action="store_true",       help="wipe & rebuild index")
+parser.add_argument("--update",     action="store_true",       help="incrementally index new records only")
+parser.add_argument("--top-k",      type=int,      default=5,      help="results to show")
+parser.add_argument("--disable-ast",action="store_true",       help="skip AST parsing")
+parser.add_argument("--rerank",     action="store_true",       help="apply cross-encoder reranking")
 args = parser.parse_args()
 
 DATA_FILE      = "preprocessed_data.json"
-PERSIST_DIR    = os.path.abspath("./chromadb")
+PERSIST_DIR    = os.path.abspath("./chromadb_uupdate_CodeBERT_db")
 AST_CACHE_FILE = "ast_cache.json"
+MODEL_NAME     = "microsoft/codebert-base"
+CROSS_ENCODER  = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 # -----------------------------------------------------------------------------
 # AST cache load
 # -----------------------------------------------------------------------------
 try:
-    with open(AST_CACHE_FILE, encoding="utf-8") as f:
+    with open(AST_CACHE_FILE, "r", encoding="utf-8") as f:
         _ast_cache: Dict[str,str] = json.load(f)
-except Exception:
+except:
     _ast_cache = {}
 
 # -----------------------------------------------------------------------------
-# Models & AST support
+# AST support
 # -----------------------------------------------------------------------------
-MODEL_NAME         = "microsoft/codebert-base"
-CROSS_ENCODER_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-
 CLANG_LIB = (
     r"C:\Program Files\LLVM\bin\libclang.dll" if platform.system()=="Windows"
     else "/ptmp2/nshashwa/llvm-project/build/lib/libclang.so"
 )
+print(f"Trying to load libclang from: {CLANG_LIB}")
 CLANG_AVAILABLE = False
 if not args.disable_ast:
     try:
@@ -88,24 +77,26 @@ def parse_cpp_ast(code: str) -> str:
         _ast_cache[key] = ""
         return ""
     with tempfile.NamedTemporaryFile(suffix=".cpp", delete=False) as tmp:
-        tmp.write(code.encode()); path = tmp.name
+        tmp.write(code.encode())
+        path = tmp.name
+    import clang.cindex as cidx
     try:
         tu = cidx.Index.create().parse(path, args=["-std=c++17"])
         changed = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", code))
         keep = set()
-        def mark(node):
-            if node.spelling in changed:
-                p = node
+        def mark(n):
+            if n.spelling in changed:
+                p = n
                 while p:
                     keep.add(p.hash)
                     p = p.semantic_parent
-            for c in node.get_children(): mark(c)
+            for c in n.get_children(): mark(c)
         mark(tu.cursor)
         nodes: List[str] = []
-        def visit(node):
-            if node.hash in keep and node.kind.is_declaration():
-                nodes.append(f"({node.kind}:{node.spelling})")
-            for c in node.get_children(): visit(c)
+        def visit(n):
+            if n.hash in keep and n.kind.is_declaration():
+                nodes.append(f"({n.kind}:{n.spelling})")
+            for c in n.get_children(): visit(c)
         visit(tu.cursor)
         ast_str = " ".join(nodes)
         _ast_cache[key] = ast_str
@@ -129,7 +120,7 @@ class Encoder:
 
     @torch.inference_mode()
     def _run(self, inputs):
-        if self.device.type=="cuda":
+        if self.device.type == "cuda":
             with torch.autocast("cuda"):
                 out = self.model(**inputs)
         else:
@@ -154,9 +145,8 @@ class Encoder:
 encoder = Encoder(MODEL_NAME)
 if args.rerank:
     from sentence_transformers import CrossEncoder
-    reranker = CrossEncoder(CROSS_ENCODER_NAME, device=encoder.device)
-    reranker.model = reranker.model.half()
-    print(f"[DEBUG] Reranker loaded: {CROSS_ENCODER_NAME} (FP16)")
+    reranker = CrossEncoder(CROSS_ENCODER, device=encoder.device).half()
+    print(f"[DEBUG] Reranker loaded: {CROSS_ENCODER} (FP16)")
 else:
     reranker = None
 
@@ -167,33 +157,14 @@ client     = PersistentClient(path=PERSIST_DIR)
 collection = client.get_or_create_collection("codebert_embeddings", metadata={"hnsw:space":"cosine"})
 
 # -----------------------------------------------------------------------------
-# Helpers (intent‑aware trivial detection)
+# Helpers
 # -----------------------------------------------------------------------------
-_TRIVIAL_PATTERNS = [
-    r"^(thanks|thank you|lgtm|looks good to me|done|nit|\+1)[\s!.]*$",
-    r"^\s*good catch\b.*$",
-    r"^\s*ah[, ]*great[.!]*$",
-    r"^\s*due to\b.*$",
-]
-_TRIVIAL_RE = [re.compile(p, re.I) for p in _TRIVIAL_PATTERNS]
-
-# catch polite/request phrases
-_SUGGEST_INTENT_RE = re.compile(r"\b(please|could you|would you|can you|shall we|let['’]s)\b", re.I)
-
 def is_trivial(txt: str, sugg: str) -> bool:
-    # 1) any GitHub suggestion block => keep
     if sugg:
         return False
     s = (txt or "").strip()
-    # 2) polite/request language or direct question => keep
-    if _SUGGEST_INTENT_RE.search(s) or s.endswith("?"):
-        return False
-    # 3) too short or boilerplate thanks/LGTM => trivial
-    if len(s.split()) < 8:
+    if len(s.split()) < 5:
         return True
-    if any(p.match(s) for p in _TRIVIAL_RE):
-        return True
-    # 4) no letters/digits => trivial
     if not re.search(r"[A-Za-z0-9]", s):
         return True
     return False
@@ -204,19 +175,18 @@ def adaptive_threshold(sims: List[float], top_stats=10, alpha=0.7, min_thresh=0.
     return max(min_thresh, mu + alpha * sigma)
 
 # -----------------------------------------------------------------------------
-# Build / Rebuild / Update Index
+# Build / Rebuild index
 # -----------------------------------------------------------------------------
 def build_index():
     global client, collection
-    existing_ids = set()
-    seen: set = set()
-
+    existing = set()
+    seen     = set()
     if args.update and not args.rebuild:
         try:
-            existing_ids = set(collection.get(include=["ids"])["ids"])
+            existing = set(collection.get(include=["ids"])["ids"])
         except:
-            existing_ids = set()
-        print(f"Updating index: skipping {len(existing_ids)} existing vectors")
+            existing = set()
+        #print(f"Updating, skipping {len(existing)} existing vectors")
     elif args.rebuild:
         print("Rebuilding index – wiping", PERSIST_DIR)
         shutil.rmtree(PERSIST_DIR, ignore_errors=True)
@@ -225,119 +195,130 @@ def build_index():
         collection = client.get_or_create_collection("codebert_embeddings", metadata={"hnsw:space":"cosine"})
     else:
         if collection.count():
-            print(f"Loaded existing index with {collection.count()} vectors")
+            #print(f"Loaded existing index with {collection.count()} vectors")
             return
 
     ids, docs, asts, metas = [], [], [], []
     for rec in tqdm(ijson.items(open(DATA_FILE, encoding="utf-8"), "item"), desc="Indexing"):
-        fn     = rec.get("filename","")
-        diff   = rec.get("diff_text","")
-        title  = rec.get("title","")
-        desc   = rec.get("description","")
-        labels = rec.get("labels","")
-        sugg   = rec.get("suggestion_text","")
-        comm   = rec.get("comment_text","")
-        ast    = parse_cpp_ast(diff) if (CLANG_AVAILABLE and fn.endswith((".c",".cpp",".h",".hpp"))) else ""
-
-        text = (
-            f"{fn} ||| {title} ||| {desc} "
-            f"||| {labels} ||| {diff}\n"
+        fn    = rec.get("filename","")
+        diff  = rec.get("diff_text","")
+        sugg  = rec.get("suggestion_text","")
+        comm  = rec.get("comment_text","")
+        ast   = parse_cpp_ast(diff) if (CLANG_AVAILABLE and fn.endswith((".cpp",".c",".hpp",".h"))) else ""
+        text  = (
+            f"{fn} ||| {rec.get('title','')} ||| {rec.get('description','')} ||| {rec.get('labels','')} ||| {diff}\n"
             f"[AST]{ast}\n[SUGGESTION]{sugg}\n[COMMENT]{comm}"
         )
         key = hashlib.md5(text.encode()).hexdigest()
-        if key in existing_ids or key in seen:
+        if key in existing or key in seen:
             continue
         seen.add(key)
-
         ids.append(key); docs.append(text); asts.append(ast)
         metas.append({
             "filename":        fn,
             "commenter":       rec.get("commenter",""),
-            "labels":          labels,
+            "labels":          rec.get("labels",""),
             "suggestion_text": sugg,
             "comment_text":    comm,
         })
         if len(ids) >= args.batch:
-            embs = np.concatenate([encoder.embed_batch(docs),
-                                   encoder.embed_batch(asts)], axis=1)
-            collection.add(ids=ids, embeddings=embs.tolist(),
-                           documents=docs, metadatas=metas)
-            existing_ids.update(ids)
+            embs = np.concatenate([encoder.embed_batch(docs), encoder.embed_batch(asts)], axis=1)
+            collection.add(ids=ids, embeddings=embs.tolist(), documents=docs, metadatas=metas)
+            existing.update(ids)
             ids.clear(); docs.clear(); asts.clear(); metas.clear()
 
     if ids:
-        embs = np.concatenate([encoder.embed_batch(docs),
-                               encoder.embed_batch(asts)], axis=1)
-        collection.add(ids=ids, embeddings=embs.tolist(),
-                       documents=docs, metadatas=metas)
+        embs = np.concatenate([encoder.embed_batch(docs), encoder.embed_batch(asts)], axis=1)
+        collection.add(ids=ids, embeddings=embs.tolist(), documents=docs, metadatas=metas)
 
     print("Index complete – total vectors:", collection.count())
     with open(AST_CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(_ast_cache, f)
 
 # -----------------------------------------------------------------------------
-# Retrieval
+# Retrieval w/ file‑level filtering
 # -----------------------------------------------------------------------------
-def retrieve(query_diff: str, k: int):
-    ast = parse_cpp_ast(query_diff) if CLANG_AVAILABLE else ""
-    ast_used = bool(ast)
+def retrieve(query_diff: str, k: int, file_filter: str):
+    # 1) Embed query
+    ast_used = False
+    if CLANG_AVAILABLE:
+        ast = parse_cpp_ast(query_diff)
+        ast_used = bool(ast)
+    else:
+        ast = ""
+    qtxt    = f"{query_diff}\n{ast}\n"
+    txt_vec = encoder.embed_text(qtxt)
+    ast_vec = encoder.embed_text(ast) if ast_used else np.zeros_like(txt_vec)
+    qvec    = np.concatenate([txt_vec, ast_vec])
+    qvec   /= np.linalg.norm(qvec, keepdims=True)
 
-    # embed query text & AST
-    qtxt     = f"{query_diff}\n{ast}\n"
-    text_vec = encoder.embed_text(qtxt)
-    ast_vec  = encoder.embed_text(ast) if ast_used else np.zeros_like(text_vec)
+    # 2) File‑filtered or global search
+    if file_filter:
+        # exact-match on filename metadata
+        filtered = collection.query(
+            query_embeddings=[qvec.tolist()],
+            n_results=k * 4,
+            where={"filename": {"$eq": file_filter}},
+            include=["distances","metadatas","embeddings"]
+        )
+        if filtered["distances"][0]:
+            dists, metas, embds = (
+                filtered["distances"][0],
+                filtered["metadatas"][0],
+                filtered["embeddings"][0],
+            )
+        else:
+            global_res = collection.query(
+                query_embeddings=[qvec.tolist()],
+                n_results=k * 4,
+                include=["distances","metadatas","embeddings"]
+            )
+            dists, metas, embds = (
+                global_res["distances"][0],
+                global_res["metadatas"][0],
+                global_res["embeddings"][0],
+            )
+    else:
+        global_res = collection.query(
+            query_embeddings=[qvec.tolist()],
+            n_results=k * 4,
+            include=["distances","metadatas","embeddings"]
+        )
+        dists, metas, embds = (
+            global_res["distances"][0],
+            global_res["metadatas"][0],
+            global_res["embeddings"][0],
+        )
 
-    # concat & normalize → 1536‑d
-    qvec = np.concatenate([text_vec, ast_vec])
-    qvec /= np.linalg.norm(qvec, axis=-1, keepdims=True)
-
-    # query Chroma
-    res = collection.query(
-        query_embeddings=[qvec.tolist()],
-        n_results=k * 4,
-        include=["distances","metadatas","embeddings"]
-    )
-    sims       = [1.0 - d for d in res["distances"][0]]
-    metas      = res["metadatas"][0]
-    doc_embeds = res["embeddings"][0]
-
+    # 3) Score, filter, and explain
     items = []
-    for sim, m, demb in zip(sims, metas, doc_embeds):
-        sugg, comm = m.get("suggestion_text",""), m.get("comment_text","")
-        if is_trivial(comm, sugg):
+    for sim, m, demb in zip(dists, metas, embds):
+        sugg    = m.get("suggestion_text","")
+        comm    = m.get("comment_text","")
+        payload = sugg or comm
+        if is_trivial(comm, sugg) or payload.strip() in ("}", "{"):
             continue
-
-        # split embedding
         demb_arr = np.array(demb)
-        dt_emb   = demb_arr[: text_vec.shape[0]]
-        ast_emb  = demb_arr[text_vec.shape[0]:]
-        txt_sim  = float(np.dot(text_vec, dt_emb))
-        ast_sim  = float(np.dot(ast_vec, ast_emb)) if ast_used else 0.0
+        dt_emb   = demb_arr[: txt_vec.shape[0]]
+        ast_emb  = demb_arr[txt_vec.shape[0]:]
+        txt_s    = float(np.dot(txt_vec, dt_emb))
+        ast_s    = float(np.dot(ast_vec, ast_emb)) if ast_used else 0.0
+        items.append({"sim":sim, "txt_sim":txt_s, "ast_sim":ast_s, "meta":m, "payload":payload})
 
-        # choose payload
-        payload = sugg if sugg else comm
-
-        items.append({
-            "sim":     sim,
-            "txt_sim": txt_sim,
-            "ast_sim": ast_sim,
-            "meta":    m,
-            "payload": payload
-        })
-
-    # adaptive threshold & pad
+    # 4) Adaptive threshold + pad to k
     th       = adaptive_threshold([it["sim"] for it in items])
     filtered = [it for it in items if it["sim"] >= th]
     if len(filtered) < k:
         for it in items:
             if len(filtered) >= k: break
-            if it not in filtered: filtered.append(it)
+            if it not in filtered:
+                filtered.append(it)
     final = filtered[:k]
 
-    # optional rerank
+    # 5) Optional rerank
     if args.rerank and reranker:
-        pairs  = [(query_diff, it["payload"]) for it in final]
-        scores = reranker.predict(pairs)
+        pairs = [(query_diff, it["payload"]) for it in final]
+        scores= reranker.predict(pairs)
         for it, r in zip(final, scores):
             it["rerank_score"] = float(r)
         final.sort(key=lambda x: x.get("rerank_score",0), reverse=True)
@@ -351,7 +332,7 @@ def main():
     build_index()
     while True:
         file_in = input("Enter file name (optional): ").strip()
-        lbls_in = input("Enter labels (optional): ").strip()
+        lbls    = input("Enter labels (optional): ").strip()
         print("Paste diff (end with EOF):")
         lines = []
         while True:
@@ -366,35 +347,30 @@ def main():
         if not diff.strip():
             break
 
-        results, threshold, ast_used = retrieve(diff, args.top_k)
+        results, threshold, ast_used = retrieve(diff, args.top_k, file_in)
         print(f"Using adaptive threshold: {threshold:.3f}\n")
 
-        for idx, it in enumerate(results, 1):
-            base = it["sim"]
+        for idx, it in enumerate(results,1):
+            base   = it["sim"]
+            txt_s  = it["txt_sim"]
+            ast_s  = it["ast_sim"]
             fb = lb = 0.0
-            if file_in and file_in.lower() in it["meta"]["filename"].lower():
-                fb = 0.1
-            if lbls_in and lbls_in.lower() in it["meta"]["labels"].lower():
-                lb = 0.05
-            final_score = base + fb + lb
-
-            factors = [
-                f"base={base:.3f}",
-                f"text={it['txt_sim']:.3f}",
-                f"ast={it['ast_sim']:.3f}",
-            ]
-            if fb: factors.append(f"file_boost={fb:.2f}")
-            if lb: factors.append(f"label_boost={lb:.2f}")
+            if file_in:
+                fb = 0.1 if file_in.lower() in it["meta"]["filename"].lower() else 0.0
+            if lbls:
+                lb = 0.05 if lbls.lower() in it["meta"]["labels"].lower() else 0.0
+            score = base + fb + lb
+            factors = [f"base={base:.3f}", f"text={txt_s:.3f}", f"ast={ast_s:.3f}"]
+            if fb:   factors.append(f"file_boost={fb:.2f}")
+            if lb:   factors.append(f"label_boost={lb:.2f}")
             if args.rerank:
                 factors.append(f"rerank={it.get('rerank_score',0):.3f}")
 
             m = it["meta"]
             print(
-                f"#{idx} score={final_score:.3f} "
-                f"({', '.join(factors)}) file={m['filename']} "
-                f"commenter={m['commenter']} labels={m['labels']}"
+                f"#{idx} score={score:.3f} ({', '.join(factors)}) "
+                f"file={m['filename']} commenter={m['commenter']} labels={m['labels']}"
             )
-            # full‑payload
             for line in it["payload"].splitlines():
                 print("    " + line)
             print()
@@ -403,5 +379,5 @@ def main():
             break
     print("Done.")
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
