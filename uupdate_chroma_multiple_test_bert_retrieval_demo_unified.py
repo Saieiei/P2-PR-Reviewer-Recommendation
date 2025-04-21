@@ -9,7 +9,7 @@ Features:
 - AST results cached on disk
 - Incremental indexing (--update) & full rebuild (--rebuild)
 - Batched embedding (default batch=256)
-- File‑level metadata filtering via Chroma’s supported operators
+- File‑level metadata filtering in Python
 - Adaptive similarity threshold
 - Drops pure‑punctuation payloads (e.g. just "}")
 - Prints full payload (suggestion or comment)
@@ -186,7 +186,8 @@ def build_index():
             existing = set(collection.get(include=["ids"])["ids"])
         except:
             existing = set()
-        #print(f"Updating, skipping {len(existing)} existing vectors")
+        # silenced: updating log
+        # print(f"Updating, skipping {len(existing)} existing vectors")
     elif args.rebuild:
         print("Rebuilding index – wiping", PERSIST_DIR)
         shutil.rmtree(PERSIST_DIR, ignore_errors=True)
@@ -195,7 +196,8 @@ def build_index():
         collection = client.get_or_create_collection("codebert_embeddings", metadata={"hnsw:space":"cosine"})
     else:
         if collection.count():
-            #print(f"Loaded existing index with {collection.count()} vectors")
+            # silenced: loaded-existing log
+            # print(f"Loaded existing index with {collection.count()} vectors")
             return
 
     ids, docs, asts, metas = [], [], [], []
@@ -254,7 +256,6 @@ def retrieve(query_diff: str, k: int, file_filter: str):
 
     # 2) File‑filtered or global search
     if file_filter:
-        # exact-match on filename metadata
         filtered = collection.query(
             query_embeddings=[qvec.tolist()],
             n_results=k * 4,
@@ -340,7 +341,7 @@ def main():
                 ln = input()
             except EOFError:
                 break
-            if ln.strip()=="EOF":
+            if ln.strip() == "EOF":
                 break
             lines.append(ln)
         diff = "\n".join(lines)
@@ -350,22 +351,36 @@ def main():
         results, threshold, ast_used = retrieve(diff, args.top_k, file_in)
         print(f"Using adaptive threshold: {threshold:.3f}\n")
 
-        for idx, it in enumerate(results,1):
-            base   = it["sim"]
-            txt_s  = it["txt_sim"]
-            ast_s  = it["ast_sim"]
-            fb = lb = 0.0
-            if file_in:
-                fb = 0.1 if file_in.lower() in it["meta"]["filename"].lower() else 0.0
-            if lbls:
-                lb = 0.05 if lbls.lower() in it["meta"]["labels"].lower() else 0.0
-            score = base + fb + lb
-            factors = [f"base={base:.3f}", f"text={txt_s:.3f}", f"ast={ast_s:.3f}"]
-            if fb:   factors.append(f"file_boost={fb:.2f}")
-            if lb:   factors.append(f"label_boost={lb:.2f}")
-            if args.rerank:
-                factors.append(f"rerank={it.get('rerank_score',0):.3f}")
+        for idx, it in enumerate(results, 1):
+            # original distance from Chroma (0 = identical, 1 = orthogonal)
+            sim_dist = it["sim"]
+            # invert to get cosine similarity (higher is better)
+            base_sim  = 1.0 - sim_dist
 
+            txt_s = it["txt_sim"]   # pure-text cosine
+            ast_s = it["ast_sim"]   # AST-based cosine (0 if AST unused)
+
+            # optional file/label boosts
+            fb = 0.1 if (file_in and file_in.lower() in it["meta"]["filename"].lower()) else 0.0
+            lb = 0.05 if (lbls    and lbls.lower()    in it["meta"]["labels"].lower())   else 0.0
+
+            # final score uses similarity + boosts
+            score = base_sim + fb + lb
+
+            # build a human-readable breakdown
+            factors = [
+                f"sim={base_sim:.3f}",
+                f"text={txt_s:.3f}",
+                f"ast={ast_s:.3f}"
+            ]
+            if fb:
+                factors.append(f"file_boost={fb:.2f}")
+            if lb:
+                factors.append(f"label_boost={lb:.2f}")
+            if args.rerank:
+                factors.append(f"rerank={it.get('rerank_score', 0):.3f}")
+
+            # print output
             m = it["meta"]
             print(
                 f"#{idx} score={score:.3f} ({', '.join(factors)}) "
@@ -379,5 +394,5 @@ def main():
             break
     print("Done.")
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
