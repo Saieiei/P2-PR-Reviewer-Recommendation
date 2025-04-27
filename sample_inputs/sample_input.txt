@@ -1,0 +1,42 @@
+clang/lib/Sema/SemaDeclCXX.cpp
+clang,clang:frontend
+
+@@ -12071,6 +12071,37 @@ NamespaceDecl *Sema::getOrCreateStdNamespace() {
+   return getStdNamespace();
+ }
+ 
++/// Check that the template-head of this class template is acceptable for
++/// a declaration of 'std::initializer_list', and optionally diagnose if
++/// it is not.
++/// \returns true if any issues were found.
++static bool CheckStdInitializerList(Sema &S, ClassTemplateDecl *Template,
++                                    bool Diagnose) {
++  TemplateParameterList *Params = Template->getTemplateParameters();
++  int ErrorKind = -1;
++
++  if (Params->size() != 1)
++    ErrorKind = 0; // must have exactly one template parameter
++  else if (Template->hasAssociatedConstraints())
++    ErrorKind = 1; // cannot have associated constraints
++  else {
++    auto *Param = dyn_cast<TemplateTypeParmDecl>(Params->getParam(0));
++    if (!Param)
++      ErrorKind = 2; // must have a type template parameter
++    else if (Param->hasDefaultArgument())
++      ErrorKind = 3; // cannot have default template arguments
++    else if (Param->isTemplateParameterPack())
++      ErrorKind = 4; // cannot be a variadic template
++    else
++      return false;
++  }
++
++  if (Diagnose)
++    S.Diag(Template->getLocation(), diag::err_malformed_std_initializer_list)
++        << Params->getSourceRange() << ErrorKind;
++  return true;
++}
++
+ bool Sema::isStdInitializerList(QualType Ty, QualType *Element) {
+   assert(getLangOpts().CPlusPlus &&
+          "Looking for std::initializer_list outside of C++.");
+EOF
