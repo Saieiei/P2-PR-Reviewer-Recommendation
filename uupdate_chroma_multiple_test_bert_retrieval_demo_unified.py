@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Precision-focused CodeBERT + Chroma diff retrieval (v8, auto-detect libclang)
