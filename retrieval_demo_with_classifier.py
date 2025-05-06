@@ -26,15 +26,19 @@ from transformers import (
     RobertaTokenizer,
 )
 
-# -----------------------------------------------------------------------------  
-# ——— CLI & paths ————————————————————————————————————————————————————————  
-# -----------------------------------------------------------------------------  
+# -----------------------------------------------------------------------------
+# ——— CLI & paths ————————————————————————————————————————————————————————
+# -----------------------------------------------------------------------------
 parser = argparse.ArgumentParser(
     description="CodeBERT+Chroma retrieval + CodeBERT classifier filter"
 )
 parser.add_argument("--batch", type=int, default=256, help="Chroma embedding batch size")
-parser.add_argument("--rebuild", action="store_true", help="Wipe & rebuild the Chroma index")
-parser.add_argument("--update", action="store_true", help="Incrementally index only new records")
+parser.add_argument(
+    "--rebuild", action="store_true", help="Wipe & rebuild the Chroma index from scratch"
+)
+parser.add_argument(
+    "--update", action="store_true", help="Incrementally index only new records"
+)
 parser.add_argument("--top-k", type=int, default=5, help="How many candidates to retrieve")
 parser.add_argument("--disable-ast", action="store_true", help="Skip AST parsing")
 parser.add_argument("--rerank", action="store_true", help="Apply cross-encoder reranking")
@@ -44,9 +48,7 @@ parser.add_argument(
     default="./codebert-finetuned/checkpoint-best",
     help="Path to your fine-tuned CodeBERT classifier (best checkpoint)",
 )
-parser.add_argument(
-    "--threshold", type=float, default=0.51, help="Minimum P(useful) to show a candidate"
-)
+parser.add_argument("--threshold", type=float, default=0.51, help="Minimum P(useful) to show a candidate")
 parser.add_argument(
     "--device",
     type=str,
@@ -63,9 +65,9 @@ PERSIST_DIR = os.path.abspath("./chromadb_uupdate_CodeBERT_db")
 AST_CACHE_FILE = "ast_cache.json"
 CROSS_ENCODER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-# -----------------------------------------------------------------------------  
-# ——— Load & optionally build the Chroma index —————————————————————————  
-# -----------------------------------------------------------------------------  
+# -----------------------------------------------------------------------------
+# ——— Load & optionally build the Chroma index —————————————————————————
+# -----------------------------------------------------------------------------
 print(f"[INFO] Loading Chroma index at {PERSIST_DIR}")
 client = PersistentClient(path=PERSIST_DIR)
 collection = client.get_or_create_collection("codebert_embeddings", metadata={"hnsw:space": "cosine"})
@@ -87,6 +89,7 @@ CLANG_AVAILABLE = False
 if not args.disable_ast:
     try:
         import clang.cindex as cidx
+
         cidx.Config.set_library_file(CLANG_LIB)
         CLANG_AVAILABLE = True
         print(f"[INFO] AST parser enabled (using libclang at {CLANG_LIB})")
@@ -95,7 +98,6 @@ if not args.disable_ast:
 
 
 def parse_cpp_ast(code: str) -> str:
-    """Return a declaration-only AST string (cached) for C/C++ snippets."""
     key = hashlib.md5(code.encode()).hexdigest()
     if key in _ast_cache:
         return _ast_cache[key]
@@ -103,13 +105,16 @@ def parse_cpp_ast(code: str) -> str:
         _ast_cache[key] = ""
         return ""
     import clang.cindex as cidx
+
     with tempfile.NamedTemporaryFile(suffix=".cpp", delete=False) as tmp:
         tmp.write(code.encode())
         path = tmp.name
+
     try:
         tu = cidx.Index.create().parse(path, args=["-std=c++17"])
         changed = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", code))
         keep = set()
+
         def mark(n):
             if n.spelling in changed:
                 p = n
@@ -118,13 +123,16 @@ def parse_cpp_ast(code: str) -> str:
                     p = p.semantic_parent
             for c in n.get_children():
                 mark(c)
+
         mark(tu.cursor)
         nodes: List[str] = []
+
         def visit(n):
             if n.hash in keep and n.kind.is_declaration():
                 nodes.append(f"({n.kind}:{n.spelling})")
             for c in n.get_children():
                 visit(c)
+
         visit(tu.cursor)
         ast_str = " ".join(nodes)
         _ast_cache[key] = ast_str
@@ -137,7 +145,6 @@ def parse_cpp_ast(code: str) -> str:
 
 
 def is_trivial(txt: str, sugg: str) -> bool:
-    """Skip one-liner or emoji comments (unless they contain a suggestion)."""
     if sugg:
         return False
     s = (txt or "").strip()
@@ -148,15 +155,12 @@ def is_trivial(txt: str, sugg: str) -> bool:
     return False
 
 
-def adaptive_threshold(sims: List[float], top_stats=10, alpha=0.7, min_thresh=0.75) -> float:
+def adaptive_threshold(sims: List[float], top_stats=10, alpha=0.7, min_thresh=0.75):
     top = sorted(sims, reverse=True)[:top_stats]
     mu, sigma = np.mean(top), np.std(top)
     return max(min_thresh, mu + alpha * sigma)
 
 
-# -----------------------------------------------------------------------------  
-# ——— Retriever encoder (CodeBERT) ———————————————————————————————————————  
-# -----------------------------------------------------------------------------  
 class RetrieverEncoder:
     def __init__(self, model_dir: str, device: str):
         self.tok = AutoTokenizer.from_pretrained(model_dir, local_files_only=True, use_fast=True)
@@ -183,6 +187,7 @@ class RetrieverEncoder:
 retriever = RetrieverEncoder(MODEL_PATH, args.device)
 if args.rerank:
     from sentence_transformers import CrossEncoder
+
     reranker = CrossEncoder(CROSS_ENCODER, device=args.device).half()
     print(f"[INFO] Reranker loaded: {CROSS_ENCODER}")
 else:
@@ -211,11 +216,11 @@ def build_index():
 
     batch_ids, docs, asts, metas = [], [], [], []
     for rec in tqdm(ijson.items(open(DATA_FILE, encoding="utf-8"), "item"), desc="Indexing"):
-        fn = rec.get("filename","").strip()
+        fn = rec.get("filename", "").strip()
         diff = (rec.get("diff_text") or "").strip()
         sugg = (rec.get("suggestion_text") or "").strip()
         comm = (rec.get("comment_text") or "").strip()
-        ast = parse_cpp_ast(diff) if (CLANG_AVAILABLE and fn.endswith((".cpp",".c",".hpp",".h"))) else ""
+        ast = parse_cpp_ast(diff) if (CLANG_AVAILABLE and fn.endswith((".cpp", ".c", ".hpp", ".h"))) else ""
         text = (
             f"{fn} ||| {rec.get('title','')} ||| {rec.get('description','')} ||| "
             f"{rec.get('labels','')} ||| {diff}\n"
@@ -225,8 +230,15 @@ def build_index():
         if key in seen:
             continue
         seen.add(key)
-        batch_ids.append(key); docs.append(text); asts.append(ast)
-        metas.append({"filename":fn,"labels":rec.get("labels",""),"suggestion_text":sugg,"comment_text":comm})
+        batch_ids.append(key)
+        docs.append(text)
+        asts.append(ast)
+        metas.append({
+            "filename": fn,
+            "labels": rec.get("labels",""),
+            "suggestion_text": sugg,
+            "comment_text": comm,
+        })
 
         if len(batch_ids) >= args.batch:
             txt_emb = retriever.embed_batch(docs)
@@ -244,11 +256,13 @@ def build_index():
     print(f"[INFO] Index built: {collection.count()} vectors")
 
 
-# -----------------------------------------------------------------------------  
-# ——— Full retrieve + filter pipeline —————————————————————————————————————  
-# -----------------------------------------------------------------------------  
 def retrieve(diff: str, k: int, fname_filter: str, lbl_filter: str):
-    # 1) embed query + optional AST
+    """Return:
+       - cand: top-k after sim‐threshold
+       - th: the adaptive sim threshold
+       - raw_n: number after trivial filtering
+       - sim_n: number after adaptive sim filtering
+    """
     ast = parse_cpp_ast(diff) if CLANG_AVAILABLE else ""
     qtxt = f"{diff}\n{ast}"
     txt_emb = retriever.embed_batch([qtxt])[0]
@@ -256,40 +270,54 @@ def retrieve(diff: str, k: int, fname_filter: str, lbl_filter: str):
     qvec = np.concatenate([txt_emb, ast_emb])
     qvec /= np.linalg.norm(qvec)
 
-    # 2) query Chroma with optional metadata filters
-    where = {}
+    # submit to Chroma
     if fname_filter:
-        where["filename"] = {"$eq": fname_filter}
-    if lbl_filter:
-        where["labels"] = {"$eq": lbl_filter}
-    if where:
-        res = collection.query(query_embeddings=[qvec.tolist()], n_results=k*4, where=where, include=["distances","metadatas"])
+        res = collection.query(
+            query_embeddings=[qvec.tolist()],
+            n_results=k * 4,
+            where={"filename": {"$eq": fname_filter}},
+            include=["distances", "metadatas"],
+        )
+        dists, metas = res["distances"][0], res["metadatas"][0]
+        if not dists:
+            res = collection.query(
+                query_embeddings=[qvec.tolist()],
+                n_results=k * 4,
+                include=["distances", "metadatas"],
+            )
+            dists, metas = res["distances"][0], res["metadatas"][0]
     else:
-        res = collection.query(query_embeddings=[qvec.tolist()], n_results=k*4, include=["distances","metadatas"])
-    dists, metas = res["distances"][0], res["metadatas"][0]
+        res = collection.query(
+            query_embeddings=[qvec.tolist()],
+            n_results=k * 4,
+            include=["distances", "metadatas"],
+        )
+        dists, metas = res["distances"][0], res["metadatas"][0]
 
-    # 3) filter trivial, build list
-    items: List[tuple] = []
+    # trivial‐comment filter
+    raw_items = []
     for sim, m in zip(dists, metas):
         payload = m.get("suggestion_text") or m.get("comment_text")
-        if is_trivial(m.get("comment_text",""), m.get("suggestion_text","")):
+        if is_trivial(m.get("comment_text", ""), m.get("suggestion_text", "")):
             continue
-        items.append((sim, m, payload))
+        raw_items.append((sim, m, payload))
+    raw_n = len(raw_items)
 
-    # 4) adaptive threshold
-    sims = [sim for sim,_,_ in items]
-    th = adaptive_threshold(sims) if sims else 0.0
-
-    # 5) keep only above threshold, pad to k
-    cand = [it for it in items if it[0] >= th]
-    if len(cand) < k:
-        for it in items:
-            if len(cand) >= k: break
+    # adaptive sim threshold
+    sim_vals = [s for s, _, _ in raw_items]
+    th = adaptive_threshold(sim_vals) if sim_vals else 1.0
+    cand = [it for it in raw_items if it[0] >= th]
+    sim_n = len(cand)
+    if sim_n < k:
+        for it in raw_items:
+            if len(cand) >= k:
+                break
             if it not in cand:
                 cand.append(it)
-    cand = cand[:k]
+        sim_n = len(cand)
 
-    # 6) optional rerank
+    cand = cand[:k]
+    # optional rerank
     if args.rerank and reranker:
         reranked = []
         for sim, m, payload in cand:
@@ -298,12 +326,12 @@ def retrieve(diff: str, k: int, fname_filter: str, lbl_filter: str):
         reranked.sort(reverse=True, key=lambda x: x[0])
         cand = [(sim, m, payload) for _, sim, m, payload in reranked]
 
-    return cand, th
+    return cand, th, raw_n, sim_n
 
 
-# -----------------------------------------------------------------------------  
-# ——— Load your fine-tuned CodeBERT classifier —————————————————————————  
-# -----------------------------------------------------------------------------  
+# -----------------------------------------------------------------------------
+# ——— Load your fine-tuned CodeBERT classifier —————————————————————————
+# -----------------------------------------------------------------------------
 print(f"[INFO] Loading classifier from {args.classifier_dir} …")
 clf_tokenizer = RobertaTokenizer.from_pretrained(args.classifier_dir, local_files_only=True)
 clf_model = RobertaForSequenceClassification.from_pretrained(args.classifier_dir, local_files_only=True)
@@ -311,9 +339,9 @@ clf_model.to(args.device).eval()
 softmax = torch.nn.Softmax(dim=-1)
 
 
-# -----------------------------------------------------------------------------  
-# ——— Main interactive loop ——————————————————————————————————————————————  
-# -----------------------------------------------------------------------------  
+# -----------------------------------------------------------------------------
+# ——— Main interactive loop ——————————————————————————————————————————————
+# -----------------------------------------------------------------------------
 def main():
     build_index()
     print(f"\n[INFO] Chroma index ready — retrieving top-{args.top_k} with P(useful) ≥ {args.threshold:.2f}\n")
@@ -336,26 +364,41 @@ def main():
             print("[INFO] No input, exiting.")
             break
 
-        candidates, auto_th = retrieve(query, args.top_k, fname, lbls)
-        print(f"\n[INFO] Using adaptive retrieval threshold = {auto_th:.3f}\n")
+        # 1) Chroma + trivial‐filter + adaptive sim‐threshold
+        candidates, auto_th, raw_n, sim_n = retrieve(query, args.top_k, fname, lbls)
+        print(f"[INFO] Retrieved {raw_n} → {sim_n} after sim ≥ {auto_th:.3f}\n")
 
+        # 2) classifier filter
         kept = []
         for sim, m, payload in candidates:
             inputs = clf_tokenizer(payload, return_tensors="pt", truncation=True, padding=True, max_length=200).to(args.device)
             with torch.no_grad():
                 logits = clf_model(**inputs).logits
-            p1 = float(softmax(logits)[0, 1])
+            probs = softmax(logits)[0].cpu().numpy()
+            p0, p1 = float(probs[0]), float(probs[1])
             if p1 >= args.threshold:
-                kept.append((sim, m, payload, p1))
+                kept.append((sim, m, payload, p0, p1))
 
+        print(f"[INFO] {len(kept)} passed classifier P(useful) ≥ {args.threshold:.2f}\n")
         if not kept:
-            print("[INFO] No candidates passed the classifier threshold.\n")
-        else:
-            for i, (sim, m, payload, p1) in enumerate(kept, 1):
-                print(f"#{i}  P(useful)={p1:.3f}  sim={sim:.3f}  file={m['filename']} labels={m['labels']}")
-                for ln in payload.splitlines():
-                    print("    " + ln)
-                print()
+            continue
+
+        # 3) show survivors
+        for i, (sim, m, payload, p0, p1) in enumerate(kept, 1):
+            cos_dist = 1.0 - sim
+            combined = sim + p1
+            print(f"# {i}")
+            print(f"    file      = {m['filename']}")
+            print(f"    labels    = {m['labels']}")
+            print(f"    sim       = {sim:.4f}")
+            print(f"    cos_dist  = {cos_dist:.4f}")
+            print(f"    P(useful) = {p1:.4f}")
+            print(f"    P(not)    = {p0:.4f}")
+            print(f"    combined  = {combined:.4f}   (sim + P(useful))")
+            print("    suggestion/comment:")
+            for ln in payload.splitlines():
+                print("      " + ln)
+            print()
 
         if input("Another? (y/n): ").lower() != "y":
             break
