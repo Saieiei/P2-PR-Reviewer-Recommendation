@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-prep_data.py  –  scrape + clean + keep suggested‑patches (with labels)
+prep_data.py  �  scrape + clean + keep suggested-patches (with labels)
 
 1. Read from pull_requests.db (PullRequests, PRFiles, PRComments).
 2. For every *useful* review comment, emit a JSON record:
-      diff_text, comment_text, suggestion_text, filename, commenter, labels, …
-3. Trivial “LGTM / thanks / 👍” comments are skipped *unless* they contain a
-   fenced GitHub *suggested‑change* block (```suggestion …```).
+      diff_text, comment_text, suggestion_text, filename, commenter, labels, �
+3. Trivial �LGTM / thanks / ??� comments are skipped *unless* they contain a
+   fenced GitHub *suggested-change* block (```suggestion �```).
 
 Run:
     python prep_data.py
@@ -23,7 +23,7 @@ OUTPUT_JSON = "preprocessed_data.json"
 BATCH_SIZE = 1_000
 
 # ------------------------------------------------------------------ #
-# 1)  Helpers – trivial‑comment detection & suggestion extraction    #
+# 1)  Helpers � trivial-comment detection & suggestion extraction    #
 # ------------------------------------------------------------------ #
 _TRIVIAL_PATTERNS = [
     r"^\s*lgtm\s*[.!]*$",
@@ -42,27 +42,27 @@ _SUGG_RE = re.compile(r"```suggestion.*?\n(.*?)```", re.S | re.I)
 
 
 def extract_suggestion(text: str) -> str:
-    """Return concatenated suggested‑patch blocks or ''."""
+    """Return concatenated suggested-patch blocks or ''."""
     blocks = _SUGG_RE.findall(text or "")
     return "\n\n".join(b.strip() for b in blocks)
 
 
 def is_trivial(text: str) -> bool:
-    """True if *text* is a low‑value one‑liner (emoji, thanks, LGTM …)."""
+    """True if *text* is a low-value one-liner (emoji, thanks, LGTM �)."""
     txt = (text or "").strip()
     if len(txt) < 5 and not extract_suggestion(txt):
         return True
     for pat in _TRIVIAL_RE:
         if pat.match(txt):
             return True
-    # All‑emoji / no alphanumerics
+    # All-emoji / no alphanumerics
     if not re.search(r"[A-Za-z0-9]", txt):
         return True
     return False
 
 
 # ------------------------------------------------------------------ #
-# 2)  DB → cleaned JSON                                              #
+# 2)  DB ? cleaned JSON                                              #
 # ------------------------------------------------------------------ #
 def process_rows(rows, out: List[Dict], total: int, kept: int):
     for row in rows:
@@ -124,7 +124,7 @@ def main():
     cur = conn.cursor()
 
     # -------------------------------------------------------------------
-    # Updated Query 1: File‑matched comments with labels from PullRequests.
+    # Updated Query 1: File-matched comments with labels from PullRequests.
     # -------------------------------------------------------------------
     q1 = """
     SELECT p.pr_number, p.title, p.description, p.labels,
@@ -151,17 +151,17 @@ def main():
 
     examples: List[Dict] = []
     total = kept = 0
-    print("Querying file‑matched comments …")
+    print("Querying file-matched comments �")
     total, kept = process_rows(cur.execute(q1), examples, total, kept)
-    print("Querying orphan comments …")
+    print("Querying orphan comments �")
     total, kept = process_rows(cur.execute(q2), examples, total, kept)
     conn.close()
 
-    print("Writing JSON …")
+    print("Writing JSON �")
     with open(OUTPUT_JSON, "w", encoding="utf-8") as fp:
         json.dump(examples, fp, ensure_ascii=False, indent=2)
 
-    print(f"Done. Visited {total:,} DB rows, wrote {kept:,} examples → {OUTPUT_JSON}.")
+    print(f"Done. Visited {total:,} DB rows, wrote {kept:,} examples ? {OUTPUT_JSON}.")
 
 
 if __name__ == "__main__":
