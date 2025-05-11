@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-process_data_pr.py — build train/dev/test TSVs from preprocessed_data.json
- • no more early‐skipping of records with zero positives
- • progress bars for both the record loop and negative‐sampling
+Refactored process_data_pr.py: all execution under main(), import-safe.
+Fill in GENERIC_EXAMPLES list as needed.
 """
 
 import json
@@ -11,7 +10,6 @@ import random
 import re
 import os
 from typing import List, Tuple
-from difflib import SequenceMatcher
 from tqdm import tqdm
 from rapidfuzz import fuzz
 
@@ -22,36 +20,12 @@ CODESPLIT       = "<CODESPLIT>"    # separator for run_classifier.py
 TRAIN_RATIO     = 0.80
 DEV_RATIO       = 0.10
 SEED            = 42
-
-# Augmentation settings
 WINDOW_SIZE     = 200  # tokens per window
 OVERLAP         = 50   # tokens overlap between windows
-SUGG_OVERSAMPLE = 2    # how many times to duplicate suggestion positives
+SUGG_OVERSAMPLE = 2    # duplicate suggestion positives
 
-# -------------------------------------------------------------------
-# 1)  Trivial‐comment detection (skip these if no suggestion)
-# -------------------------------------------------------------------
-_TRIVIAL_PATTERNS = [
-    r"^\s*(?:lgtm|ship it|\+1)[.!]*$",
-    r"^\s*(?:thanks?|thank you)[.!]*$",
-]
-_TRIVIAL_RE = [re.compile(p, re.I) for p in _TRIVIAL_PATTERNS]
-
-def is_trivial(text: str) -> bool:
-    txt = (text or "").strip()
-    # too short or no alphanumerics
-    if len(txt) < 5 or not re.search(r"[A-Za-z0-9]", txt):
-        return True
-    # matches trivial patterns
-    for pat in _TRIVIAL_RE:
-        if pat.match(txt):
-            return True
-    return False
-
-# -------------------------------------------------------------------
-# 2)  Hand-picked generic comment examples (skip these even if >5 chars)
-# -------------------------------------------------------------------
-GENERIC_EXAMPLES = [
+# Hand-picked generic patterns; fill in your examples
+GENERIC_EXAMPLES: List[str] = [
     "Applied.",
     "Sorry!",
     "Yeah that is probably better. Thanks. I updated the patch.",
@@ -132,7 +106,6 @@ GENERIC_EXAMPLES = [
     "I tried that fix, and I agree it looks like the right fix to me. It seems to solve the issue.",
     "https://github.com/llvm/llvm-project/pull/133840",
     "```suggestion\n```",
-    "fixed.",
     "Ahh, got it.",
     "yep, changing it now",
     "This looks to be resolve, but not done.",
@@ -172,7 +145,7 @@ GENERIC_EXAMPLES = [
     "Fair point!",
     "I'm blind!",
     "Sure, added!",
-    "Sure ??",
+    "Sure",
     "You are right. Fixed in the latest revision.",
     "done, but what's the difference?",
     "or false, whichever.",
@@ -272,136 +245,717 @@ GENERIC_EXAMPLES = [
     "Done, apologies for the noise.",
     "This needs to be updated",
     "Same thing with header here",
-    "@Moxinilian ??",
+    "@Moxinilian",
     "I think i have something cleaner let me know in the new pr.",
     "Ah yeah, I read that wrong. Thanks for confirming.",
     "That's a great point and I really appreciate the suggestion. In fact, I wasn't sure how to do it : ) That's now been incorporated.",
     "Yeah that is probably better. Thanks. I updated the patch.",
     "Yeah. That's ok",
     "Awesome. Thank you!",
-    "I never noticed this. Thanks!"
+    "I never noticed this. Thanks!",
+    "Ignore that.",
+    "Ignore this",
+    "if (inserted)",
+	  "When would this not be true?",
+	  "Does it look good now? Or should I change more?",
+	  "So, once it's enabled it can no longer be disabled? Could we send some sort of an event when the setting changes?",
+	  "Typo becauase",
+	  "Not a bug of this problem:",
+	  "The actual lowering for this is:",
+	  "source files as well). However, compile time performance will be slow if there are",
+	  "Note to self: stopped review here.",
+	  "I agree this is the right test update.",
+	  "Just checking, was there nothing for 9.1?",
+	  "Thanks, i've incorporated both of these comments.",
+	  "Yes, it should be renamed as well.",
+	  "Yeah its generated. I copied this from the outputed hlsls test cases. I can update the test cases.",
+	  "that's really great point, adding another test.",
+	  "There are more similar patterns.",
+	  "I have a try something like",
+	  "This can also be simplified into:",
+	  "Hm, is this case possible?",
+	  "Thanks. I'll revert this back.",
+	  "Yes, it's LEA at line 10.",
+	  "Thanks, can you add it to the PR description?",
+	  "This line should be part of the previous paragraph.",
+	  "Acknowledged.",
+	  "ach, beat me to it!",
+	  "Yes, this is the implementation of the traits for OpenMPI.",
+	  "Dropped, thanks.",
+	  "Thanks, weird that clang-format did not catch this one :(",
+	  "Right, good point.",
+	  "indeed, will add them",
+	  "I probably need to update this test to be align 8.",
+	  "My bad, missed it!",
+	  "Yes, it's already covered at line 874.",
+	  "Same as other function",
+	  "DEPENDS",
+	  "}",
+	  "Yeah, looks great.",
+	  "Ah yes ok I am with you.",
+	  "Yes, we can fix this later.",
+	  "Thanks for finding this.",
+	  "Can you help me understand this check?",
+	  "The code is fine.",
+	  "Will do.",
+	  "These should be implicit as well.",
+	  "Ah, yes! Moved it to an assert.",
+	  "same nit from above",
+	  "My justification would be the same.",
+	  "I think you can combine these two lines into one.",
+	  "Oh yeah of course.. Thanks!",
+	  "Fair enough",
+	  "Corrected",
+	  "I like this idea too.",
+	  "Don't think this is needed.",
+	  "As above",
+	  "Oops, will fix and will check for typo.",
+	  "Ah that's better.",
+	  "Yep, will fix",
+	  "Oh right!",
+	  "Works for me",
+	  "Oops,  it looks like I forgot to push one commit.",
+	  "Adjusted, thanks!",
+	  "Yeah you're right, not a problem then.",
+	  "This can be an assert",
+	  "Please could you link me to the source for this? I am having trouble finding it.",
+	  "Dropped, thanks!",
+	  "Oh, ok.",
+	  "Will rename them.",
+	  "Yes, it should.",
+	  "Didn't get that?",
+	  "I'll write another test.",
+	  "Ta!",
+	  "likewise",
+	  "Thanks for the clarification.",
+	  "Aligned.",
+	  "-------",
+	  "Understood, will address.",
+	  "What happened to Example 3?",
+	  "Oops, thanks for catching this serious error! Checks have now been tightened.",
+	  "Looks reasonable to me.",
+	  "LGTM either way",
+	  "I don't think so.",
+	  "Yes, you are right...",
+	  "Good spot!",
+	  "@erichkeane @AaronBallman",
+	  "I missed this, thanks for noticing.",
+	  "Ah yep. :/",
+	  "expects",
+	  "Outlined, thanks!",
+	  "insert",
+	  "see #102118",
+	  "Oh woops, that should be inverted",
+	  "Yeah, I missed this. Will fix.",
+	  "I see, thanks for the clarification.",
+	  "Good catch, DYN is the default FRM value now.",
+	  "I agree this is the right test update.",
+	  "Yeah, I think it's good that you raised it, especially because I had the exact same back and forth. I'll leave this conversation as unresolved and maybe fmayer has an opinion.Yeah, I think it's good that you raised it, especially because I had the exact same back and forth. I'll leave this conversation as unresolved and maybe fmayer has an opinion.",
+	  "Yes and I should note that.",
+	  "reduces",
+	  "Even better :)",
+	  "Hmmm good question",
+	  "This logic still applies.",
+	  "Ok, but, suppose that someone has written",
+	  "Reordered, thanks!",
+	  "Not in this patch",
+	  "Will do.",
+	  "Add a message",
+	  "@clayborg",
+	  "Yes, that looks good.",
+	  "Did you submit it?",
+	  "i see. fixing it.",
+	  "same in line 52",
+	  "Good job.",
+	  "Ah, I see :+1:",
+	  "Hi Jonathan,",
+	  "Change the 12?",
+	  "Okay, thanks in advance.",
+	  "Maybe?",
+	  "OKie!",
+	  "I don't think we need that change",
+	  "Something like that.",
+	  "@jayfoad ping.",
+	  "You are really fast.",
+	  "Hi Adam,",
+	  "Ok, sounds good to me.",
+	  "Ok, looks good to me.",
+	  "Oh my :)",
+	  "As above.",
+	  "This is wrong",
+	  "Gone, thanks",
+     "Thanks for the pointer and explanation!",
+	  "{",
+	  "Thanks, I will modify it.",
+	  "Do you mean something else?",
+	  "That sounds reasonable to me.",
+	  "static",
+	  "This file needs hi tests.",
+	  "Thanks, that is indeed the case.",
+	  "Got it, thanks.",
+	  "This is probably better",
+	  "Good catch. Thanks.",
+	  "I can live with that :)",
+	  "}",
+	  "Thanks for your reminding. I have pre-commited the test.",
+	  "You are right. This is no longer needed.",
+	  "1. Sounds good.",
+	  "Why is this necessary?",
+	  "Can do ",
+	  "could you elaborate on what are those? I don't know what you mean.",
+	  "Good point, I'll create a follow-up PR.",
+	  "Please merge with previous entry.",
+	  "yes that would be fine by me.",
+	  "Similar here",
+	  "Thanks for the heads-up! :)",
+	  "add a new line",
+	  "e.g,",
+	  "in the same module.",
+	  "please do! thanks!",
+	  "Indeed. Amended.",
+	  "This is #115659.",
+	  "Do you insist?",
+	  "ok. got it",
+	  "True, that.",
+	  "Ack, got it.",
+	  "Expanded comments.",
+	  "should be fine now",
+	  "Thanks, I just did that.",
+	  "I changed to what you suggested.",
+	  "Undone, thanks",
+	  "Yes, that makes sense. Thanks for the explanation.",
+	  "cheap trick",
+	  "untested",
+	  "what does this mean?",
+	  "Yes, just replaced it.",
+	  "Document this",
+	  "Thanks for elaborating",
+	  "e.g,",
+	  "Thanks! Good catch!",
+	  "Simplified, thanks!",
+	  "Yes, I guess 6 is enough.",
+	  "Missed one",
+	  "Commented code.",
+	  "Right. I will fix it.",
+	  "@cor3ntin ^",
+	  "Or this.",
+	  "Yes, that's the change I proposed.",
+	  "?Where is this used",
+	  "Also LGTM!",
+	  "@Meinersbur",
+	  "fix comments",
+	  "Ah. Good to know.",
+	  "yes, indeed",
+	  "So much better ",
+	  "I think these aren't used now.",
+	  "Missing test.",
+	  "update test title",
+	  "Ok.I see.",
+	  "OK I will test them in a followup path.",
+	  "thanks. changed to AnyShaped.",
+	  "Implemented in b491cb6.",
+	  "Just a drive-by note.",
+	  "Yep that looks good to me.",
+	  "Addressed all, thanks",
+	  "Latest version is 5",
+	  "Use input rank instead of `6`",
+	  "Thanks for your comments! I will track them later.",
+	  "Good catch, yes this should be private.",
+	  "unsigned Size;",
+	  "Multiple lines",
+	  "Yes, technically. I've dropped the NFC tag.",
+	  "Ah?  so we still expect the others to get here?",
+	  "This code is in desperate need of some comments.",
+	  "Hasn't landed yet.",
+	  "Changed, thanks!",
+	  "80 characters",
+	  "R, State, OrigLoop,",
+	  "Whoops.",
+	  "Ah, I missed this. I was going to discuss removing this argument as I can't find anything that makes use of it.",
+	  "Yess.",
+	  "Make it fit in a line (80-char)",
+	  "Aha, should be a copy-paste mistake.",
+	  "I guess yes, if such an instruction existed.",
+	  "Yeah it looks OK, they should both be about the same.",
+	  "there are four methods listed",
+	  "Very cool.. I do the same.",
+	  "Add assertion message",
+	  "Oh, missed to update.",
+	  "See my comments above.",
+	  "Thanks for the pointer and explanation!",
+	  "This looks like an improvement.",
+	  "Thanks for your reply , I understand it. I'll fix my PR follows the v1.0 Spec.",
+	  "e.g,",
+	  "Ignore me again.",
+	  "Thanks for your comments.",
+	  "OK we can do without this",
+	  "Agreed, I will raise it.",
+	  " Make sense to me.",
+	  "Hmm...actually, I was wrong. I must have messed up the calculation. I'll try to catch this usage.",
+	  "Thanks, the changes have been made.",
+	  "Thanks, I will modify it.",
+	  "consider",
+    "I never do that!",
+	  "Shouldn't this be the other way round?",
+	  "Does #114916 help?",
+	  "definitely",
+	  "Are you working on a follow-up PR or what's the plan otherwise?",
+	  "Duplicate line",
+	  "Fine with me",
+	  "Your wish is my command. :-)",
+	  "Can that happen or should we assert?",
+	  "Thanks for letting me know @mikerice1969! I'll take care of it",
+	  "those changes are no longer in this PR.",
+	  "I'll try to add it",
+	  "Why did this change?",
+	  "Seems reasonable to me.",
+	  "Thanks.",
+	  "Oh well, good enough!",
+	  "That looks fine, thanks",
+	  "Common problem.",
+	  "Good point, renamed",
+	  "We don't do this in most of the code.",
+	  "Please give me some time to investigate, I'm not very familiar with analyzer.",
+	  "Let's discuss there, thanks!",
+	  "Thanks @AaronBallman, updates provided.",
+	  "Combining these looks great, thanks.",
+	  "Implemented, thanks.",
+	  "Thanks for the catch",
+	  "Okay, I've reverted back to the old form.",
+	  "Thanks! I'm lean towards incremental development and progress, so let's proceed and land this and refactor to align.",
+	  "Aah. missed to push this change. Thanks.",
+	  "Good point, thanks.",
+	  "There still only seems to be one commit in this PR",
+	  "Thanks, that wasn't my intention.",
+	  "@delcypher Thanks! LGTM.",
+	  "Thanks!",
+	  "Thanks for the ping. Agree with the inconsistency. Will get back to you.",
+	  "Thanks.  It's  more accurate and cleaner.",
+	  "Thanks! I will have a look at that on Monday then.",
+	  "Sounds good, thanks for the explanation of how we're choosing the minimum supported version.",
+	  "Yep, sounds reasonable. Thanks.",
+	  "Yes, thanks for catching!",
+	  "Thanks! Would you be okay if I do this in an (immediate) follow-up?",
+	  "Moved, thanks!",
+	  "@AaronBallman thanks for the feedback. Do you mean the [following changes](https://github.com/llvm/llvm-project/pull/112081/commits/9c2a745ed365449be45cd062f29c89cabde0f514)?",
+	  "I'll try to remember that in the future.",
+	  "You're right, thanks. #111347",
+	  "Thanks, I will update that, please let me know if there are any other C++ 26 features that I should adopt.",
+	  "Right. Thanks.",
+	  "hat worked Thanks!",
+	  "Oh perfect, thanks!",
+	  "Recovered original style. Please help check if you have other questions about this pr, thanks a lot. :-)",
+	  "Thanks, I forgot about this while switching between projects",
+	  "Thanks for taking a look.",
+	  " did a small bit of refactoring based on Sean's comments to reduce the number of ifdefs now, thanks!",
+	  "",
+	  "Ack, I'll take care of of it. Thanks.",
+	  "Thanks. Just in case, is i12**7** a typo or intentional?",
+	  "So try to match them?",
+	  "Right, thanks.",
+	  "Thanks for the catch",
+	  "Yep, moved out, thanks!",
+	  "Thanks for the catch, and yup I believe so. They should be clearer now that I have full matches. See update.",
+	  "Thanks! I documented those are experimental.",
+	  "Thanks. Will fix.",
+	  "Ah! Much nicer. Thanks. :-)",
+	  "Yes, moved to the top as suggested, thanks!",
+	  "Thanks! Swapped the order of the cost. Would you mind doing the merge?",
+	  "in the same module.",
+	  "Really appreciate this block of comments. Paints the picture of what happens clearly. Thanks :)!",
+	  "makes sense, thanks @michaelmaitland and @topperc !",
+	  "Thanks, this is now addressed in commit a05ae62",
+	  "Yeah, I agree that this patch should not fix those dependencies. Thanks for explaining.",
+	  "Ah yeah, there are a couple of them left, I forgot to fix them, thanks for noticing it!",
+	  "Oh. Thanks I see.",
+	  "Ooops! Thanks for spotting that.",
+	  "Yep, moved out, thanks!",
+	  "Thanks -- will keep the idea of matching once and reusing the result in mind if performance becomes an issue later!",
+	  "Ah, okay, didn't realise that, thanks!",
+	  "Swapped and documented ,thanks.",
+	  "Oh, I didn't know that. Thanks!",
+	  "Restored, thanks!",
+	  "Thanks, replaced in https://github.com/llvm/llvm-project/pull/126008/commits/d4cb8efac8dc49197623e99229cf3d8f41335bbc",
+	  "Makes sense to me. Thanks for the investigation!",
+	  "Thanks for explaining. I had misunderstood what these were for.",
+	  "You are right. We can use 2 here.",
+	  "The line table without your changes was helpful, thanks!",
+	  "thanks, is it possible to add a test?",
+	  "Thanks for cleaning these up :)",
+	  "I will fix that.",
+	  "Separate patch is fine.",
+	  "Thanks for this info! Will keep these style rules in mind.",
+	  "Yep, moved out, thanks!",
+	  "Replaced, thanks!",
+	  "hat PR looks good to me, thanks!",
+	  "Thanks, I didn't notice that.",
+	  "It should. Thanks for catching that.",
+	  "#110885",
+	  "No bad change! Thanks for catching it!",
+	  "Okay, I'll change it to that.",
+	  "They are needed.",
+	  "Thanks, I've rewritten this to be more explicit about the goals and mechanisms in light of our discussion.",
+	  "Sounds good, I'll have a look later then. Thanks :)",
+	  "Thanks for linking me to this!",
+	  "No bad change! Thanks for catching it!",
+	  "DEPENDS",
+	  "Yep, will look into that separately, thanks",
+	  "Okay Thanks I am Working on it",
+	  "Yeah, the original one is much better.",
+	  "Is it used somewhere?",
+	  "Found a better solution.",
+	  "Might as well",
+	  "Agreed. Thanks for explaining.",
+	  "Thanks looks good to me now!",
+	  "Oh, thanks for pointing out this. I'll fix it.",
+	  "Thanks for the suggestions! I think they improves readability.",
+	  "Hi, I think you're right, thanks. I'll have a look.",
+	  "Thanks for the suggestions. I modified the checks as suggested.",
+	  "Thanks. Virginia is fixing this in her PR, which this PR is based on.",
+	  "Thanks, will look into it as follow-up.",
+	  "Not needed in the latest version, thanks",
+	  "Ok, thanks for clarifying. I will look into this.",
+	  "Thanks for all the reviews @frederick-vs-ja! I will look into it soon.",
+	  "What's fake about it?",
+	  "Thanks for spotting and the revert. Fix is at https://github.com/llvm/llvm-project/pull/121918.",
+	  "That's much better, thanks.",
+	  "Didn't know that, thanks.",
+	  "Thanks for making the update here.",
+	  "oh, I see why now. anyway, thanks!",
+	  "Indeed, thanks for the catch.",
+	  "In this patch might be simpler thanks.",
+	  "Yep, thanks for the catch.",
+	  "Update to check #of successors, thanks!",
+	  "I've put up https://github.com/llvm/llvm-project/pull/95083 to fix this.",
+	  "Make sense, thanks.",
+	  "Thanks for the catch",
+	  "Moved to the end. thanks!",
+	  "An example of regression here.",
+	  "Thanks for pointing to the coding standards!",
+	  "My motivation was to simplifiy the solution, I will check the other way, thanks.",
+	  "};",
+	  "Ah, that was the intent. Thanks for pointing it out.",
+	  "understood, thanks",
+	  "Thanks, I'll update this.",
+	  "Thanks. Just in case, is i12**7** a typo or intentional?",
+	  "Thanks for your contribution, @fschlimb .",
+	  "That seems fine, thanks",
+	  "Thanks, did this, including moving some of the other recent, related additions.",
+	  "Right. Thanks.",
+	  "That looks fine, thanks",
+	  "Thanks for the ping. Agree with the inconsistency. Will get back to you.",
+	  "You are right, thanks!",
+	  "Ah I forgot we don't handle loads and stores yet, thanks for submitting that. I don't see any reason why we can't handle them too.",
+	  "I'd prefer to leave it for later.",
+	  "Sounds good, thanks!",
+    "Ah, I read the original wording wrong, I'll drop this sentence entirely.",
+	  "Not a huge deal, just tends to be cleaner.",
+	  "And now you can delete all of this",
+	  "Yes, that would be cool!",
+	  "WTF is a dependent BMI?",
+	  "uhh I think so? Its hard to give this thing a precise name",
+	  "These shouldn't be here.",
+	  "Code gone now",
+	  "Please document.",
+	  "No. This has no relation to spilling.",
+	  "Hi.",
+	  "SG, I'll move it.",
+	  "Ooo interesting.",
+	  "OK.",
+	  "I guess you dont need this.",
+	  "Will need update after #114061",
+	  "I guess this piece is gone.",
+	  "Either way is fine by me.",
+	  "Please fix FIXME",
+	  "@DavidTruby I think you missed this when responding to feedback",
+	  "Yes please, so we can keep the test as it was.",
+	  "right, typo",
+	  "",
+	  "Yes it is. I guess I can change this to assert.",
+	  "Go for it, then.  Downstream usage can adapt if needed.",
+	  "I see - yes.",
+	  "Can we",
+	  "Changed all places.",
+	  "Yeah, we should do that.",
+	  "RIght, let's leave it as is then.",
+	  "}",
+	  "Agreed. Don't think we want to maintain this list.",
+	  "Meh",
+	  "Do you still need these changes?",
+	  "Ping @cxy-1993",
+	  "Awe, I thought this was clever/useful :)",
+	  "Addressed in dbe8d4c.",
+	  "we still need",
+	  "This todo should probably be in the code :)",
+	  "second this.",
+	  "Wrong instruction. Fixing real quick.",
+	  "Please restore the comments from the left (extending them if necessary).",
+	  "I'm using",
+	  "I will try to explain in detail why it was needed :)",
+	  "This cannot fail",
+	  "This is the second part of the fix.",
+	  ") {",
+	  "Yeah, this looks much better now.",
+	  "Please actually generate the test checks...",
+	  "happening.",
+	  "in the same module.",
+	  "N/A anymore.",
+	  "Anyway, I changed as you suggested.",
+	  "Yeah, we should do that.",
+	  "Yes, I prefer that too.",
+	  "Yes, working on updating accordingly",
+	  "I think that makes sense ",
+	  "That was blind copy-and-paste.",
+	  "Nope, I don't mind.",
+	  "happening.",
+	  "Sounds better IMO",
+	  "Yes, I think so.",
+	  "It's not. I'm gonna fix it today.",
+	  "change to match above",
+	  "Yes please, so we can keep the test as it was.",
+	  "Yes, testing this also in the latest revision.",
+	  "If possible, I would like this to be a separate PR.",
+	  "Undo this change?",
+	  "Good point. I'll rename this function.",
+	  "Alright, for the future roadmap",
+	  "Why is this needed now?",
+	  "Err yeah :)",
+	  "Okay, then I agree that it wouldn't be beneficial to do so.",
+	  "That's fine then.",
+	  "Got it. The check will be in other PR.",
+	  "This seems useful",
+	  "Yeah, I think so.",
+	  "CC @JDevlieghere who might know more.",
+	  "Regenerate this file?",
+	  "in the same module.",
+	  "This is still an issue.",
+	  "OK, if it's pre-checked the unreachable before was fine",
+	  "Don't need the mattrs",
+	  "Don't need the mattrs",
+	  "... I'm confused. Why're you setting all the indices to 0?",
+	  "Sounds good. I may experiment with that as part of the effort to improve stale matching/continuous mode.",
+	  "Yes, I think that's basically it.",
+	  "I'll update that in a separate PR.",
+	  "Oh, where is the non-vp version? Or does it exist? :-)",
+	  "I don't think we can spell that",
+	  "I do not think you need to copy:",
+	  "Why was this moved here?",
+	  "It's copied from above, and that was also unescaped, good catch",
+	  "Cleaned up the code. Hopefully better now.",
+	  "Yes, separate patch",
+	  "yes. clarified.",
+	  "#104864",
+	  "Just take name?",
+	  "I see your point. I will adjust it to only report the debug message and return true.",
+	  "Why was this moved here?",
+	  "just renaming",
+	  "fixed",
+	  "Do you need to make the copy if you're not going to delete it?",
+	  "Again, not your fault but it's downright confusing!",
+	  "This value is discarded.",
+	  "yes, that is a good approach. As long as we know that we won't get an error if some bytes were written",
+	  "Good catch. I need to change line 61.",
+	  "Why no match? I don't see any trouble with",
+	  "Made some improvements.",
+	  "Will add the extra check",
+	  "Copy-paste != fixing existing mistakes :)",
+	  "I could but why?",
+	  "Ah, I had missed that!",
+	  "ok, sounds justified.",
+	  "Keep this all as Align?",
+	  "Aha I see, this is a fix. Never mind.",
+	  "Ah, I read the original wording wrong, I'll drop this sentence entirely.",
+	  "Please add test cases that cover possible errors.",
+	  "You're right, I've turned this into a check and brought back the debug print from the original code.",
+	  "love this formula! so clever :)",
+	  "Then drop them completely from the list",
+	  "Neat!",
+	  "Yes the owning header should be first",
+	  "I hate this thing.",
+	  "represnent",
+	  "For reach?",
+	  "@jrtc27",
+	  "Let's move that out, too :)",
+	  "I don't think this is reachable.",
+	  "There's another hard tab here.",
+	  "I looked, but couldn't find anI looked, but couldn't find an",
+	  "Cool, makes sense! I'll have to give it a go at some point",
+	  "Good catch! I will add a guard here!",
+	  "Ah, I see. Sounds good.",
+	  "Yes I did.",
+	  "Why was this deleted?",
+	  "Yes, this was a bug.",
+	  "And now you can delete all of this",
+	  "This is #114867.",
+	  "Also adjusted.",
+	  "@jrtc27",
+	  "Makes sense.",
+	  "Yes, please have a look.",
+	  "Yes, that's a better name.",
+	  "Typo optimised :)",
+	  "Always and Leave?",
+	  "I believe this can stay",
+	  "Yes I agree. I will add it here.",
+	  "Yes, I do remember something related. That's why it is just a question. :)",
+	  "Actually I think they're all wrong",
+	  "No worries.",
 ]
+# Fuzzy threshold for generic detection
+FUZZY_THRESHOLD = 81
 
-# 2) pick your fuzzy cutoff
-FUZZY_THRESHOLD = 90
+# -------------------------------------------------------------------
+# 1) Trivial-comment detection
+_TRIVIAL_PATTERNS = [
+    r"^\s*(?:lgtm|ship it|\+1)[.!]*$",
+    r"^\s*(?:thanks?|thank you)[.!]*$",
+]
+_TRIVIAL_RE = [re.compile(p, re.I) for p in _TRIVIAL_PATTERNS]
 
-# 3) normalize to lowercase alpha-numeric “tokens”
-def normalize(s: str) -> str:
-    # replace any run of non-word chars with a single space
-    return re.sub(r"\W+", " ", s).strip().lower()
-
-# 4) pre-normalize your generic set once
-"""
-  Return True if `comment` fuzzily matches any of your generic examples
-  (ignores word order, extra punctuation, small typos).
-"""
-GENERIC_NORMS = [normalize(g) for g in GENERIC_EXAMPLES]
-
-def is_generic(comment: str) -> bool:
-    c = normalize(comment)
-    for g in GENERIC_NORMS:
-        # token_set_ratio ignores word order & duplicate tokens
-        if fuzz.token_set_ratio(c, g) >= FUZZY_THRESHOLD:
+def is_trivial(text: str) -> bool:
+    txt = (text or "").strip()
+    if len(txt) < 5 or not re.search(r"[A-Za-z0-9]", txt):
+        return True
+    for pat in _TRIVIAL_RE:
+        if pat.match(txt):
             return True
     return False
 
 # -------------------------------------------------------------------
-# 3)  Sliding‐window for long diffs
+# 2) Generic-comment detection via fuzzy matching
+
+def normalize(s: str) -> str:
+    return re.sub(r"\W+", " ", s).strip().lower()
+
+GENERIC_NORMS   = [ normalize(p) for p in GENERIC_EXAMPLES ]
+FUZZY_THRESHOLD = 92    # strict catch for longish matches
+TYPO_THRESHOLD  = 80    # looser catch for short‐pattern typos
+
+def is_generic(comment: str) -> bool:
+    c = normalize(comment)
+    for pat in GENERIC_NORMS:
+        # 1) exact match
+        if c == pat:
+            return True
+
+        score = fuzz.ratio(c, pat)
+
+        # 2) adaptive typo window: at least ±2 chars, at most ±4, or 20% of pat length
+        delta = max(2, min(4, int(len(pat) * 0.2)))
+        if abs(len(c) - len(pat)) <= delta and score >= TYPO_THRESHOLD:
+            return True
+
+        # 3) long‐string strict catch
+        if len(c) > len(pat) + delta and score >= FUZZY_THRESHOLD:
+            return True
+
+    return False
+
 # -------------------------------------------------------------------
+# 3) Sliding-window for long diffs
+
 def sliding_windows(diff: str) -> List[str]:
     tokens = diff.split()
     if len(tokens) <= WINDOW_SIZE:
         return [" ".join(tokens)]
-    windows = []
+    windows: List[str] = []
     step = WINDOW_SIZE - OVERLAP
     for start in range(0, len(tokens), step):
-        windows.append(" ".join(tokens[start : start + WINDOW_SIZE]))
+        windows.append(" ".join(tokens[start:start+WINDOW_SIZE]))
         if start + WINDOW_SIZE >= len(tokens):
             break
     return windows
 
 # -------------------------------------------------------------------
-# 4)  Build positives & negatives, split, write TSVs
-# -------------------------------------------------------------------
-with open(DATA_FILE, "r", encoding="utf-8") as f:
-    records = json.load(f)
+# 4) Build positives from a record
 
-positives: List[Tuple[int,str,str,str,str]] = []
+def make_positives(rec: dict) -> List[Tuple[int,str,str,str,str]]:
+    positives: List[Tuple[int,str,str,str,str]] = []
+    pr        = str(rec.get("pr_number", ""))
+    fn        = rec.get("filename", "")
+    labels    = rec.get("labels", "")
+    diff_txt  = (rec.get("diff_text", "") or "").strip()
+    sugg      = (rec.get("suggestion_text", "") or "").strip()
+    comm      = (rec.get("comment_text", "") or "").strip()
+    commenter = rec.get("commenter", "")
 
-# wrap main loop in tqdm so you see progress
-for rec in tqdm(records, desc="Scanning JSON records"):
-    pr        = str(rec.get("pr_number",""))
-    fn        = rec.get("filename","")
-    labels    = rec.get("labels","")
-    diff_txt  = (rec.get("diff_text","") or "").strip()
-    sugg      = (rec.get("suggestion_text","") or "").strip()
-    comm      = (rec.get("comment_text","") or "").strip()
-    commenter = rec.get("commenter","")
-
-    # still drop records with absolutely no diff context (no point in training on them)
     if not diff_txt:
-        continue
+        return positives
 
     prefix = f"[FILE]{fn} [LABEL]{labels} "
     for win in sliding_windows(diff_txt):
         diff_win = prefix + win
-
-        # (1) Suggestions → always positives (oversample)
+        # suggestion positives
         if sugg:
             for _ in range(SUGG_OVERSAMPLE):
                 positives.append((1, pr, commenter, diff_win, sugg))
-
-        # (2) Comments → positives only if non-trivial & not generic
-        if (comm
-            and comm != sugg
-            and not is_trivial(comm)
-            and not is_generic(comm)
-        ):
+        # comment positives
+        if comm and comm != sugg and not is_trivial(comm) and not is_generic(comm):
             positives.append((1, pr, commenter, diff_win, comm))
+    return positives
 
-print(f"> Created {len(positives)} positive examples")
+# -------------------------------------------------------------------
+# 5) Sample negatives
 
-# Negatives: one per positive, drawn from other PRs
-random.seed(SEED)
-negatives: List[Tuple[int,str,str,str,str]] = []
-idxs = list(range(len(positives)))
+def sample_negatives(positives: List[Tuple[int,str,str,str,str]]) -> List[Tuple[int,str,str,str,str]]:
+    negatives: List[Tuple[int,str,str,str,str]] = []
+    idxs = list(range(len(positives)))
+    for i in tqdm(idxs, desc="Sampling negatives"):
+        _, pr_i, _, diff_i, _ = positives[i]
+        while True:
+            j = random.choice(idxs)
+            if j != i and positives[j][1] != pr_i:
+                break
+        _, pr_j, commenter_j, _, text_j = positives[j]
+        negatives.append((0, pr_i, commenter_j, diff_i, text_j))
+    return negatives
 
-# wrap negative sampling in tqdm too
-for i in tqdm(idxs, desc="Sampling negatives"):
-    _, pr_i, _, diff_i, _ = positives[i]
-    while True:
-        j = random.choice(idxs)
-        if j != i and positives[j][1] != pr_i:
-            break
-    _, pr_j, commenter_j, _, text_j = positives[j]
-    negatives.append((0, pr_i, commenter_j, diff_i, text_j))
-
-print(f"> Created {len(negatives)} negative examples")
-
-# Combine, shuffle, split
-all_ex = positives + negatives
-random.shuffle(all_ex)
-
-n_total = len(all_ex)
-n_train = int(n_total * TRAIN_RATIO)
-n_dev   = int(n_total * DEV_RATIO)
-
-train_set = all_ex[:n_train]
-dev_set   = all_ex[n_train : n_train + n_dev]
-test_set  = all_ex[n_train + n_dev :]
-
-print(f"> Train/dev/test counts: {len(train_set)}/{len(dev_set)}/{len(test_set)}")
-
-def write_tsv(exs: List[Tuple[int,str,str,str,str]], path: str):
+# -------------------------------------------------------------------
+# 6) Write TSV
+def write_tsv(exs: List[Tuple[int,str,str,str,str]], filename: str) -> None:
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    path = os.path.join(OUTPUT_DIR, filename)
     with open(path, "w", encoding="utf-8") as out:
         for label, prnum, commenter, diffa, commb in exs:
             d = diffa.replace("\n"," ")
             c = commb.replace("\n"," ")
             out.write(f"{label}{CODESPLIT}{prnum}{CODESPLIT}{commenter}{CODESPLIT}{d}{CODESPLIT}{c}\n")
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-write_tsv(train_set, os.path.join(OUTPUT_DIR, "train.tsv"))
-write_tsv(dev_set,   os.path.join(OUTPUT_DIR, "dev.tsv"))
-write_tsv(test_set,  os.path.join(OUTPUT_DIR, "test.tsv"))
+# -------------------------------------------------------------------
+def main():
+    random.seed(SEED)
 
-print("✔ process_data_pr.py complete — train/dev/test ready for run_classifier.py")
+    # Load records
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        records = json.load(f)
+    print(f"Scanning JSON records: {len(records)} items")
+
+    # Build positives
+    positives: List[Tuple[int,str,str,str,str]] = []
+    for rec in tqdm(records, desc="Creating positives"):
+        positives.extend(make_positives(rec))
+    print(f"> Created {len(positives)} positive examples")
+
+    # Sample negatives
+    negatives = sample_negatives(positives)
+    print(f"> Created {len(negatives)} negative examples")
+
+    # Shuffle and split
+    all_ex = positives + negatives
+    random.shuffle(all_ex)
+    n_total = len(all_ex)
+    n_train = int(n_total * TRAIN_RATIO)
+    n_dev   = int(n_total * DEV_RATIO)
+    train_set = all_ex[:n_train]
+    dev_set   = all_ex[n_train:n_train+n_dev]
+    test_set  = all_ex[n_train+n_dev:]
+    print(f"> Train/dev/test counts: {len(train_set)}/{len(dev_set)}/{len(test_set)}")
+
+    # Write TSVs
+    write_tsv(train_set, "train.tsv")
+    write_tsv(dev_set,   "dev.tsv")
+    write_tsv(test_set,  "test.tsv")
+
+    print("✔ process_data_pr.py complete — train/dev/test ready for run_classifier.py")
+
+if __name__ == "__main__":
+    main()
