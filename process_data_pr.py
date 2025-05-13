@@ -1,40 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Refactored process_data_pr.py with enhanced generic-filter logic:
-- Optional pure-presence drop via SHORT_MAX_LEN
-- Dual-threshold fuzzy matching with token-set ratio for typo-mode
-Replace GENERIC_EXAMPLES and optionally SHORT_MAX_LEN as needed.
+process_data_pr.py — enhanced length-gated filtering with design-cue rescue:
+  • Short comments (≤ LENGTH_THRESHOLD): keep if non-generic
+  • Long comments (> LENGTH_THRESHOLD): keep if
+       – has_technical_reference OR
+       – is_suggestion OR
+       – is_design
+    otherwise drop.
+Fill in GENERIC_EXAMPLES and SHORT_MAX_LEN as needed.
 """
 
+import os
+import re
 import json
 import random
-import re
-import os
 from typing import List, Tuple, Dict
-from tqdm import tqdm
 from rapidfuzz import fuzz
+from tqdm import tqdm
 
-# === Configuration ===
-DATA_FILE       = "preprocessed_data.json"
-OUTPUT_DIR      = "."              # where train.tsv, dev.tsv, test.tsv go
-CODESPLIT       = "<CODESPLIT>"    # separator for run_classifier.py
-TRAIN_RATIO     = 0.80
-DEV_RATIO       = 0.10
-SEED            = 42
-WINDOW_SIZE     = 200  # tokens per window
-OVERLAP         = 50   # tokens overlap between windows
-SUGG_OVERSAMPLE = 2    # duplicate suggestion positives
-
-# === Fill your generic comment patterns here ===
-# Example:
-# GENERIC_EXAMPLES = [
-#     "lgtm",
-#     "looks good to me",
-#     "approved",
-#     "thanks",
-#     "fixed",
-# ]
+# -----------------------------------------------------------------------------
+# CONFIGURATION (fill these in)
+# -----------------------------------------------------------------------------
 GENERIC_EXAMPLES: List[str] = [
     "Applied.",
     "Sorry!",
@@ -1186,41 +1173,110 @@ GENERIC_EXAMPLES: List[str] = [
 	  "Indeed, thank you for reporting this.",
 	  "reporting",
 	  "Incorrect file name",
-      "Nice",
-      "catch!",
-      "Thanks",
-      "Thank",
-      "Nice catch! Thank you!",
-      "I see. Thanks."
-      "I don't understand the code with the change",
-      "Thanks for making the update here.",
-      "Debugging...",
-      "Debugging",
-      "Thanks for the reply!",
-      "Updated, thanks!",
-      "Looks better to me.",
-      "me.",
-      "me",
-      "oversight",
-      "adjust",
-      "Thanks for filing the issue.",
-      "Will adjust separately.",
-      "sure, sounds good.",
-      "Oh my...",
+    "Nice",
+    "catch!",
+    "Thanks",
+    "Thank",
+    "Nice catch! Thank you!",
+    "I see. Thanks."
+    "I don't understand the code with the change",
+    "Thanks for making the update here.",
+    "Debugging...",
+    "Debugging",
+    "Thanks for the reply!",
+    "Updated, thanks!",
+    "Looks better to me.",
+    "me.",
+    "me",
+    "oversight",
+    "adjust",
+    "Thanks for filing the issue.",
+    "Will adjust separately.",
+    "sure, sounds good.",
+    "Oh my...",
+    "Hmm.. I went for this approach because of how the IR looked.  Maybe I missed something here.",
+    "That's horrible, but good catch. In that case I guess we can keep the current implementation, it's very reasonable.",
+    "You're correct. I guess it must have moved while I was refactoring things..",
+    "Added some in b5afda8d760998641cf08a6d229252924b0ad146",
+    "Yes, I think with the edit to the previous lines it's easier to follow.",
+    "I know this is a TODO, but the language is a bit awkward.",
+    "I think this is okay then. I don't think it is worth adding a new flag.",
+    "Yeah, that was a total oversight on my part.",
+    "Hmm.. I went for this approach because of how the IR looked.  Maybe I missed something here.",
+	  "That's horrible, but good catch. In that case I guess we can keep the current implementation, it's very reasonable.",
+	  "You're correct. I guess it must have moved while I was refactoring things..",
+	  "Added some in b5afda8d760998641cf08a6d229252924b0ad146",
+	  "Yes, I think with the edit to the previous lines it's easier to follow.",
+	  "I know this is a TODO, but the language is a bit awkward.",
+	  "I think this is okay then. I don't think it is worth adding a new flag.",
+	  "Yeah, that was a total oversight on my part.",
+	  "Thanks, good point. That was also changed in the original PR so I will revert that too. I wonder if it makes more sense to do a full revert and reland with the right changes instead. But since the PR is 1 year old it might be tricky.",
+	  "ohh! sorry couldn't find it. can u specify where it is ? and do i need to undo the formatting i think that is automatically done by the editor i am using",
+	  "I'll remove that option since we don't really need it for the test case.",
+	  "I'd add a TODO to move this to the versioned namespace. We can do that in a follow-up patch.",
+	  "Fixed in [a891346](https://github.com/llvm/llvm-project/pull/132994/commits/a891346a8524a414adcd2f33e63e06ab8e39a732)",
+	  "Agreed, that's probably easier and less invasive.",
+	  "so this guideline only applies when introducing a new macro.",
+	  "I wonder if these TODOs are the best way to remember about these tasks. I suspect a comment in the issue that makes `std::deque` constexpr would also help, potentially.",
+    "How embarrassing, I ran the script before I changed the version. Should be correct now, sorry! And thank you for reviewing :)",
+	  "oh yeah sorry! i completely missed that it could be negative as wel",
+	  "fixed in [4c9b493a](https://github.com/llvm/llvm-project/pull/132484/commits/4c9b493a2c7b993e4b742e57d08d6925a866bf5c)",
+	  "Please add the comments to explain how we derived the exponent computations.",
+	  "Filled in.",
+	  "fixed in [00b5943c](https://github.com/llvm/llvm-project/pull/126303/commits/00b5943cb279d64e4d15849ca75a453afd417e54)",
+	  "What does this file use from stddef.h? Please explicitly include libc/hdr/types/size_t.h for size_t.",
+	  "ah.. sorry about that! fixed in [caa32e6e](https://github.com/llvm/llvm-project/pull/126291/commits/caa32e6e67e9be05a5e4a317e92209df69173bcd)",
+	  "resolved in [caa32e6e](https://github.com/llvm/llvm-project/pull/126291/commits/caa32e6e67e9be05a5e4a317e92209df69173bcd)",
+	  "Should hopefully be fixed by 2d6330f83a64a414f83d647bba7f23928f66aa5c",
+	  "fixed all these in [52a98bb](https://github.com/llvm/llvm-project/pull/125704/commits/52a98bbcac609fc164fb3e068b47cf3b11a35858)",
+	  "False dependency, remove.",
+	  "Thanks for this! I have fixed the idiv-support condition now.",
+	  "Fixed in [6fff293](https://github.com/llvm/llvm-project/pull/125638/commits/6fff293f7a9e6a981ba2ff59397cfaa440bd011d).",
+	  "This should be fixed with https://github.com/llvm/llvm-project/pull/125596 . We can either leave a TODO to drop the dynamic case when the PR lands or wait a bit and land this after.",
+	  "Should fix doing that there?",
+	  "Resolved in [475945d9](https://github.com/llvm/llvm-project/pull/125356/commits/475945d9556edbe496dbd43af2461b52a51edf00)",
+	  "fixed in [9b499bcb](https://github.com/llvm/llvm-project/pull/125356/commits/9b499bcb5a1894b4991c14885cd514746c6c634a)",
+	  "Thanks. Fixed in [459d2d5](https://github.com/llvm/llvm-project/pull/125307/commits/459d2d5ea7f803cc6553b7d9007283281263f1fe)",
+	  "Great point. Yeah I think it could have done. I have fixed this in https://github.com/llvm/llvm-project/pull/125307/commits/459d2d5ea7f803cc6553b7d9007283281263f1fe",
+	  "Thanks. Fixed in [459d2d5](https://github.com/llvm/llvm-project/pull/125307/commits/459d2d5ea7f803cc6553b7d9007283281263f1fe)",
+	  "I've fixed the build failure with https://github.com/llvm/llvm-project/commit/8578b816fa9050c33561f06d631459e12645953a. Thanks!",
+	  "Fixed by https://github.com/llvm/llvm-project/commit/381416a8c7e0e8fc8b12c83c6c856b8ef7c4d8a8",
+	  "Should be fixed now. I also moved the formatting to a separate commit.",
+	  "Thanks, fixed in https://github.com/llvm/llvm-project/pull/124421/commits/56c0267f91967d6db9f9e9f5f93ad63343464230",
+	  "No worries, fixed in https://github.com/llvm/llvm-project/pull/124036/commits/56c7755d0e1dc4c36f53e9177654b56ca06104ec",
+	  "I updated it in https://github.com/llvm/llvm-project/pull/124019/commits/ca35ec29e81dfd3222d4ebba91937c96b5080f91",
+	  "Fixed in https://github.com/llvm/llvm-project/pull/124019/commits/4325873687bb18cd9000a12b369e593667c99f29",
+	  "Yes, bugs cause other bugs and all the use points need to be fixed",
+	  "I applied your suggested fixed together with Eugene's to my pr https://github.com/llvm/llvm-project/pull/122957",
+	  "Fixed in: [67ed339cb821](https://github.com/llvm/llvm-project/pull/122835/commits/67ed339cb8213aaa7a8bb83896cf707b7119d619)",
+	  "Fixed in: [be54a010ae13](https://github.com/llvm/llvm-project/pull/122835/commits/be54a010ae13f885c61a605322cf5dce98bc7ae2)",
+	  "oops sorry for missing that, should be fixed with a2063ba7ffdbbb4faf5da5f32739ab761c2e4289",
+	  "Nice, fixed. Once https://github.com/llvm/llvm-project/pull/119261 lands we'll be able to simply iterate over the functions and this won't even be needed.",
+	  "fixed in https://github.com/llvm/llvm-project/commit/0ee8d8cd4b3d61fc6cf6e740a54dd5a23c921048!",
+	  "fixed in https://github.com/llvm/llvm-project/pull/121839/commits/3ce51118035f1f84ad02898858c95021ff6420d9, thx",
+	  "Thanks for the review! ",
+    "@boomanaiden154 specifically suggested this [here](https://github.com/llvm/llvm-project/pull/121839#discussion_r1925920983), but I'm happy to change it to FIXME if you prefer.",
 
 ]
 
-# (Optional) For patterns where you want to drop any comment containing the token up to a certain length,
-# populate SHORT_MAX_LEN with normalized pattern -> max length.
-# e.g. SHORT_MAX_LEN = { "thanks": 20, "fixed": 8 }
-SHORT_MAX_LEN: Dict[str, int] = {"thanks": 59, "fixed": 35, "Thanks": 59, "yes": 59, "Yes": 59, "No": 59, "no":59, "Fixed": 59, "ah": 59, "oh": 59, "ok": 59, "OK": 59, "Ok": 59, "Ah": 59, "Done": 59, "done": 59, "good": 59, "Good": 59, "neat": 59, "Neat": 59, "missed": 59, "Missed": 59, "Nope": 59, "nope": 59, "Yeah": 59, "yeah": 59, "anyway": 59, "Anyway": 59, "Anyways": 59, "anyways": 59, "Ping": 59, "ping": 59, "right": 59, "please": 59, "Please": 59, "looks": 59, "Looks": 59, "follow": 59, "PR": 59, "pr": 59, "Pr": 59, "catching": 59, "working": 59, "Oh": 59, "sense": 59, "Sense": 59, "sound": 59, "sounds": 59, "bad": 59, "Bad": 59, "good.": 59, "Good.": 59, "thx": 59, "todo": 59, "ToDo": 59, "TODO": 59, "Done.": 59, "done.": 59, "apologies": 59, "I": 59, "weird": 59, "ditto": 35, "done": 59, "updated": 59, "Removed": 59, "wrong": 59, "works": 59, "Hi": 59, "hi": 59, "comment": 59, "Well": 59, "better": 59, "FIXME": 59, "Oops": 59, "copy": 59, "addressed": 59, "description": 59, "read": 59, "Thank": 59, "happens": 59, "look": 59, "already": 59, ":D": 59, "Sorry": 59, "we": 59, "comments": 59, "Not": 59, "understood": 59, "Check": 59, "agree": 59, "line": 59, "C++": 59, "C": 59, "typo": 59, "Addressed": 59, "Dead code": 59, "Forgot": 59, ":(": 59, ":)": 59, "Nice": 59, "point": 59, "Great": 59, "catch": 59, "change": 59, "better": 59, "You": 59, "Same": 59, "fine": 59, "do": 59, "do.": 59, "duplicate": 59, "@arsenm": 59, "error": 59, "logic": 59, "Indeed": 59, "Nvm": 59, "Nvm.": 59, "rid": 59, "Deleted": 59, "Deleted.": 59, "done": 59, "Yep": 59, "newline": 59, "Yeah,": 59, "problem": 59, "problem.": 59, "cases": 59, "sorry": 59, "I'll": 59, "DEPENDS": 59, "needed": 59, "helpful": 59, "helpful.": 59, "I": 59, "ACK": 59, "ACK.": 59, "finding": 59, "Accident?": 59, "Does.": 59, "release": 59, "LGTY": 59, "LGTY?": 59, "helpful": 59, "very": 59, "comment": 59, "Thanks,": 59, "Okay": 59, "Okay,": 59, "okay,": 59, "okay,": 59, "This": 59, "moved": 59, "too": 59, "Here": 59, "indeed": 59, "indeed.": 59, "beneficial": 59, "feedback": 59, "feedback!": 59, "Got": 59, "it": 59, "changed": 59, "changed.": 59, "correct.": 59, "correct": 59, "test": 59, "Indeed": 59, "Indeed,": 59, "reporting": 59, "Nice": 59, "catch!": 59, "Debugging": 59, "me.": 59, "me": 59, "adjust": 59, "oversight: 59"}
+SHORT_MAX_LEN: Dict[str, int] = {"thanks": 59, "fixed": 125, "Thanks": 59, "yes": 59, "Yes": 59, "No": 59, "no":59, "Fixed": 112, "ah": 59, "oh": 59, "ok": 59, "OK": 59, "Ok": 59, "Ah": 59, "Done": 59, "done": 59, "good": 59, "Good": 59, "neat": 59, "Neat": 59, "missed": 59, "Missed": 59, "Nope": 59, "nope": 59, "Yeah": 59, "yeah": 59, "anyway": 59, "Anyway": 59, "Anyways": 59, "anyways": 59, "Ping": 59, "ping": 59, "right": 59, "please": 59, "Please": 59, "looks": 59, "Looks": 59, "follow": 59, "PR": 59, "pr": 59, "Pr": 59, "catching": 59, "working": 59, "Oh": 59, "sense": 59, "Sense": 59, "sound": 59, "sounds": 59, "bad": 59, "Bad": 59, "good.": 59, "Good.": 59, "thx": 59, "todo": 59, "ToDo": 59, "TODO": 59, "Done.": 59, "done.": 59, "apologies": 59, "I": 59, "weird": 59, "ditto": 35, "done": 59, "updated": 120, "Removed": 59, "wrong": 59, "works": 59, "Hi": 59, "hi": 59, "comment": 59, "Well": 59, "better": 59, "FIXME": 59, "Oops": 59, "copy": 59, "addressed": 59, "description": 59, "read": 59, "Thank": 59, "happens": 59, "look": 59, "already": 59, ":D": 59, "Sorry": 59, "we": 59, "comments": 59, "Not": 59, "understood": 59, "Check": 59, "agree": 59, "line": 59, "C++": 59, "C": 59, "typo": 59, "Addressed": 59, "Dead code": 59, "Forgot": 59, ":(": 59, ":)": 59, "Nice": 59, "point": 59, "Great": 59, "catch": 59, "change": 59, "better": 59, "You": 59, "Same": 59, "fine": 59, "do": 59, "do.": 59, "duplicate": 59, "@arsenm": 59, "error": 59, "logic": 59, "Indeed": 59, "Nvm": 59, "Nvm.": 59, "rid": 59, "Deleted": 59, "Deleted.": 59, "done": 59, "Yep": 59, "newline": 59, "Yeah,": 59, "problem": 59, "problem.": 59, "cases": 59, "sorry": 59, "I'll": 59, "DEPENDS": 59, "needed": 59, "helpful": 59, "helpful.": 59, "I": 59, "ACK": 59, "ACK.": 59, "finding": 59, "Accident?": 59, "Does.": 59, "release": 59, "LGTY": 59, "LGTY?": 59, "helpful": 59, "very": 59, "comment": 59, "Thanks,": 59, "Okay": 59, "Okay,": 59, "okay,": 59, "okay,": 59, "This": 59, "moved": 59, "too": 59, "Here": 59, "indeed": 59, "indeed.": 59, "beneficial": 59, "feedback": 59, "feedback!": 59, "Got": 59, "it": 59, "changed": 59, "changed.": 59, "correct.": 59, "correct": 59, "test": 59, "Indeed": 59, "Indeed,": 59, "reporting": 59, "Nice": 59, "catch!": 59, "Debugging": 59, "me.": 59, "me": 59, "adjust": 59, "oversight": 59, "Agreed": 59, "probably": 59, "that's": 59, "deasierone": 59, "resolved": 120, "Resolved": 120}
 
-# Fuzzy thresholds
-FUZZY_THRESHOLD = 92  # strict-mode similarity for long comments
-TYPO_THRESHOLD  = 80  # token-set similarity for typo-mode
+DATA_FILE       = "preprocessed_data.json"
+OUTPUT_DIR      = "."
+CODESPLIT       = "<CODESPLIT>"
+TRAIN_RATIO     = 0.80
+DEV_RATIO       = 0.10
+SEED            = 42
+WINDOW_SIZE     = 200
+OVERLAP         = 50
+SUGG_OVERSAMPLE = 2
 
-# -------------------------------------------------------------------
-# 1) Trivial-comment detection
+# length threshold for gating
+LENGTH_THRESHOLD = 59  # characters
+
+# -----------------------------------------------------------------------------
+# 1) Trivial‐comment detection
+# -----------------------------------------------------------------------------
 _TRIVIAL_PATTERNS = [
     r"^\s*(?:lgtm|ship it|\+1)[.!]*$",
     r"^\s*(?:thanks?|thank you)[.!]*$",
@@ -1231,31 +1287,32 @@ def is_trivial(text: str) -> bool:
     txt = (text or "").strip()
     if len(txt) < 5 or not re.search(r"[A-Za-z0-9]", txt):
         return True
-    for pat in _TRIVIAL_RE:
-        if pat.match(txt):
-            return True
-    return False
+    return any(p.match(txt) for p in _TRIVIAL_RE)
 
-# -------------------------------------------------------------------
-# 2) Generic-comment detection via enhanced dual-threshold
 
+# -----------------------------------------------------------------------------
+# 2) Generic‐comment detection via dual‐threshold + presence
+# -----------------------------------------------------------------------------
 def normalize(s: str) -> str:
     return re.sub(r"\W+", " ", s).strip().lower()
 
-# pre-normalize patterns
 GENERIC_NORMS = [normalize(p) for p in GENERIC_EXAMPLES]
-
-# optional normalized keys for SHORT_MAX_LEN
 SHORT_MAX_LEN = { normalize(k): v for k, v in SHORT_MAX_LEN.items() }
 
+FUZZY_THRESHOLD = 92
+TYPO_THRESHOLD  = 80
+
 def is_generic(comment: str) -> bool:
+    """
+    Exact match, presence+length, typo‐mode, strict‐mode.
+    (No hedging here.)
+    """
     c = normalize(comment)
     for pat in GENERIC_NORMS:
-        # (0) pure-presence drop
         maxlen = SHORT_MAX_LEN.get(pat)
+        # (0) pure‐presence drop
         if maxlen and pat in c.split() and len(c) <= maxlen:
             return True
-
         # (1) exact match
         if c == pat:
             return True
@@ -1265,31 +1322,86 @@ def is_generic(comment: str) -> bool:
         score_token_set = fuzz.token_set_ratio(c, pat)
         delta = max(2, min(4, int(len(pat) * 0.2)))
 
-        # (2) typo-mode for short comments only
-        if abs(len(c) - len(pat)) <= delta:
-            # token-level single-word typo
-            for tok in c.split():
-                if fuzz.ratio(tok, pat) >= TYPO_THRESHOLD:
-                    return True
-            # fallback to token-set fuzzy on the whole comment
-            if score_token_set >= TYPO_THRESHOLD:
-                return True
+        # (2) typo‐mode (short)
+        if abs(len(c) - len(pat)) <= delta and score_token_set >= TYPO_THRESHOLD:
+            return True
 
-        # (3) strict-mode for longer comments
+        # (3) strict‐mode (long)
         if len(c) > len(pat) + delta and score_ratio >= FUZZY_THRESHOLD:
             return True
 
     return False
 
 
-# -------------------------------------------------------------------
-# 3) Sliding-window for long diffs
+# -----------------------------------------------------------------------------
+# 3) Suggestion cues (keep non-technical but actionable)
+# -----------------------------------------------------------------------------
+SUGGESTION_PATTERNS = [
+    r"\bplease\b",
+    r"\bcan you\b",
+    r"\bensure\b",
+    r"\bshould\b",
+    r"\bcould\b",
+    r"\bmight\b",
+    r"\brecommend\b",
+    r"\bconsider\b",
+    r"\bneed to\b",
+    r"\bmakes sense\b",
+    r"\bwe can\b",
+    r"\blet'?s\b",
+    r"\bremove\b",
+    r"\badd\b",
+    r"\brefactor\b",
+    r"\bupdate\b",
+    r"\bsplit\b",
+    r"\boptimize\b",
+]
+SUGGESTION_RE = re.compile("|".join(SUGGESTION_PATTERNS), re.I)
 
+def is_suggestion(comment: str) -> bool:
+    return bool(SUGGESTION_RE.search(comment))
+
+
+# -----------------------------------------------------------------------------
+# 4) Technical‐reference requirement
+# -----------------------------------------------------------------------------
+TECH_RE = re.compile(r"""
+    [`\w]+\.\w+        |   # foo.cpp, llvm::Foo
+    `[^`]+`            |   # `identifier`
+    /\w+               |   # /path/to/file
+    ::                 |   # C++ namespace sep
+    \b[A-Za-z_]\w*\(\)    # foo()
+""", re.X)
+
+def has_technical_reference(comment: str) -> bool:
+    return bool(TECH_RE.search(comment))
+
+
+# -----------------------------------------------------------------------------
+# 5) Design‐cue patterns (rescue architectural/spec-level comments)
+# -----------------------------------------------------------------------------
+DESIGN_PATTERNS = [
+    r"\bIs it (?:really )?worth\b",
+    r"\bWhy can'?t\b",
+    r"\bDo we need\b",
+    r"\bShould we\b",
+    r"\bPerhaps we should\b",
+    r"\bWhy not\b",
+]
+DESIGN_RE = re.compile("|".join(DESIGN_PATTERNS), re.I)
+
+def is_design(comment: str) -> bool:
+    return bool(DESIGN_RE.search(comment))
+
+
+# -----------------------------------------------------------------------------
+# 6) Sliding windows for diffs
+# -----------------------------------------------------------------------------
 def sliding_windows(diff: str) -> List[str]:
     tokens = diff.split()
     if len(tokens) <= WINDOW_SIZE:
         return [" ".join(tokens)]
-    windows: List[str] = []
+    windows = []
     step = WINDOW_SIZE - OVERLAP
     for start in range(0, len(tokens), step):
         windows.append(" ".join(tokens[start:start+WINDOW_SIZE]))
@@ -1297,40 +1409,60 @@ def sliding_windows(diff: str) -> List[str]:
             break
     return windows
 
-# -------------------------------------------------------------------
-# 4) Build positives from a record
 
-def make_positives(rec: dict) -> List[Tuple[int, str, str, str, str]]:
-    positives: List[Tuple[int, str, str, str, str]] = []
-    pr        = str(rec.get("pr_number", ""))
-    fn        = rec.get("filename", "")
-    labels    = rec.get("labels", "")
-    diff_txt  = (rec.get("diff_text", "") or "").strip()
-    sugg      = (rec.get("suggestion_text", "") or "").strip()
-    comm      = (rec.get("comment_text", "") or "").strip()
-    commenter = rec.get("commenter", "")
+# -----------------------------------------------------------------------------
+# 7) Build positives with length-gated & design-cue rescue
+# -----------------------------------------------------------------------------
+def make_positives(rec: dict) -> List[Tuple[int,str,str,str,str]]:
+    positives: List[Tuple[int,str,str,str,str]] = []
+    prnum     = str(rec.get("pr_number",""))
+    fn        = rec.get("filename","")
+    labels    = rec.get("labels","")
+    diff      = (rec.get("diff_text","")     or "").strip()
+    sugg      = (rec.get("suggestion_text","") or "").strip()
+    comm      = (rec.get("comment_text","")    or "").strip()
+    commenter = rec.get("commenter","")
 
-    if not diff_txt:
+    if not diff:
         return positives
 
     prefix = f"[FILE]{fn} [LABEL]{labels} "
-    for win in sliding_windows(diff_txt):
-        diff_win = prefix + win
-        # suggestion positives (always kept)
+    for win in sliding_windows(diff):
+        windowed = prefix + win
+
+        # A) always keep explicit suggestions
         if sugg:
             for _ in range(SUGG_OVERSAMPLE):
-                positives.append((1, pr, commenter, diff_win, sugg))
-        # comment positives (filtered)
-        if comm and comm != sugg and not is_trivial(comm) and not is_generic(comm):
-            positives.append((1, pr, commenter, diff_win, comm))
+                positives.append((1, prnum, commenter, windowed, sugg))
+
+        # B) comment‐based positives
+        if comm and comm != sugg and not is_trivial(comm):
+            # 1) drop core generics
+            if is_generic(comm):
+                continue
+
+            # 2) short comments: keep all
+            if len(comm) <= LENGTH_THRESHOLD:
+                positives.append((1, prnum, commenter, windowed, comm))
+                continue
+
+            # 3) long comments: design-cue rescue
+            if (
+                has_technical_reference(comm)
+                or is_suggestion(comm)
+                or is_design(comm)
+            ):
+                positives.append((1, prnum, commenter, windowed, comm))
+            # else: drop
+
     return positives
 
-# -------------------------------------------------------------------
-# 5) Sample negatives
 
-def sample_negatives(positives: List[Tuple[int, str, str, str, str]]) -> List[Tuple[int, str, str, str, str]]:
-    from tqdm import tqdm
-    negatives: List[Tuple[int, str, str, str, str]] = []
+# -----------------------------------------------------------------------------
+# 8) Sample negatives
+# -----------------------------------------------------------------------------
+def sample_negatives(positives: List[Tuple[int,str,str,str,str]]) -> List[Tuple[int,str,str,str,str]]:
+    negatives: List[Tuple[int,str,str,str,str]] = []
     idxs = list(range(len(positives)))
     for i in tqdm(idxs, desc="Sampling negatives"):
         _, pr_i, _, diff_i, _ = positives[i]
@@ -1338,38 +1470,42 @@ def sample_negatives(positives: List[Tuple[int, str, str, str, str]]) -> List[Tu
             j = random.choice(idxs)
             if j != i and positives[j][1] != pr_i:
                 break
-        _, pr_j, commenter_j, _, text_j = positives[j]
+        _, _, commenter_j, _, text_j = positives[j]
         negatives.append((0, pr_i, commenter_j, diff_i, text_j))
     return negatives
 
-# -------------------------------------------------------------------
-# 6) Write TSV
 
-def write_tsv(exs: List[Tuple[int, str, str, str, str]], filename: str) -> None:
+# -----------------------------------------------------------------------------
+# 9) Write TSV
+# -----------------------------------------------------------------------------
+def write_tsv(exs: List[Tuple[int,str,str,str,str]], filename: str) -> None:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     path = os.path.join(OUTPUT_DIR, filename)
     with open(path, "w", encoding="utf-8") as out:
-        for label, prnum, commenter, diffa, commb in exs:
-            d = diffa.replace("\n", " ")
-            c = commb.replace("\n", " ")
-            out.write(f"{label}{CODESPLIT}{prnum}{CODESPLIT}{commenter}{CODESPLIT}{d}{CODESPLIT}{c}\n")
+        for lbl, prnum, commenter, diffw, commw in exs:
+            d = diffw.replace("\n"," ")
+            c = commw.replace("\n"," ")
+            out.write(f"{lbl}{CODESPLIT}{prnum}{CODESPLIT}{commenter}"
+                      f"{CODESPLIT}{d}{CODESPLIT}{c}\n")
 
-# -------------------------------------------------------------------
+
 def main():
     random.seed(SEED)
-    # Load records
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         records = json.load(f)
-    print(f"Scanning JSON records: {len(records)} items")
-    # Build positives
-    positives: List[Tuple[int, str, str, str, str]] = []
-    for rec in tqdm(records, desc="Creating positives"):
+    print(f"Loaded {len(records)} records")
+
+    # build positives
+    positives: List[Tuple[int,str,str,str,str]] = []
+    for rec in tqdm(records, desc="Building positives"):
         positives.extend(make_positives(rec))
-    print(f"> Created {len(positives)} positive examples")
-    # Sample negatives
+    print(f"> Positives: {len(positives)}")
+
+    # sample negatives
     negatives = sample_negatives(positives)
-    print(f"> Created {len(negatives)} negative examples")
-    # Shuffle and split
+    print(f"> Negatives: {len(negatives)}")
+
+    # shuffle & split
     all_ex = positives + negatives
     random.shuffle(all_ex)
     n_total = len(all_ex)
@@ -1377,13 +1513,14 @@ def main():
     n_dev   = int(n_total * DEV_RATIO)
     train_set = all_ex[:n_train]
     dev_set   = all_ex[n_train:n_train+n_dev]
-    test_set  = all_ex[n_train+n_dev:]
-    print(f"> Train/dev/test counts: {len(train_set)}/{len(dev_set)}/{len(test_set)}")
-    # Write TSVs
+    test_set  = all_ex[n_train+n_train+n_dev:]
+    print(f"> Split: {len(train_set)}/{len(dev_set)}/{len(test_set)}")
+
+    # write out
     write_tsv(train_set, "train.tsv")
     write_tsv(dev_set,   "dev.tsv")
     write_tsv(test_set,  "test.tsv")
-    print("✔ process_data_pr.py complete — train/dev/test ready for run_classifier.py")
+    print("✔ process_data_pr.py complete — train/dev/test ready")
 
 if __name__ == "__main__":
     main()
