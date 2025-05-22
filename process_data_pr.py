@@ -1,27 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-process_data_pr.py — enhanced length-gated filtering with design-cue rescue:
-  • Short comments (≤ LENGTH_THRESHOLD): keep if non-generic
-  • Long comments (> LENGTH_THRESHOLD): keep if
-       – has_technical_reference OR
-       – is_suggestion OR
-       – is_design
-    otherwise drop.
-Fill in GENERIC_EXAMPLES and SHORT_MAX_LEN as needed.
+Build train/dev/test TSVs   +   3 human-readable debug files
+(dropped_comments.txt, diffs_label1.txt, diffs_label0.txt).
+
+• TSVs     → repo root
+• Debug    → ./debugging_files/
 """
 
-import os
-import re
-import json
-import random
-from typing import List, Tuple, Dict
+import os, re, json, random, atexit
+from typing import List, Tuple, Dict, Set
 from rapidfuzz import fuzz
 from tqdm import tqdm
 
-# -----------------------------------------------------------------------------
-# CONFIGURATION (fill these in)
-# -----------------------------------------------------------------------------
+# ───────────────────────────────────────────────────────────────────────
+# KEEP YOUR FULL GENERIC_EXAMPLES  &  SHORT_MAX_LEN  TABLES UNCHANGED!
 GENERIC_EXAMPLES: List[str] = [
     "Applied.",
     "Sorry!",
@@ -1256,271 +1249,224 @@ GENERIC_EXAMPLES: List[str] = [
 	  "fixed in https://github.com/llvm/llvm-project/pull/121839/commits/3ce51118035f1f84ad02898858c95021ff6420d9, thx",
 	  "Thanks for the review! ",
     "@boomanaiden154 specifically suggested this [here](https://github.com/llvm/llvm-project/pull/121839#discussion_r1925920983), but I'm happy to change it to FIXME if you prefer.",
+ 	  "@AaronBallman could you take a look at this issue? thanks",
+ 	  "yes, feel free to submit a new pr. thanks",
+ 	  "@antangelo thanks. I've removed the assert in favor of a condition and added additional tests.",
+ 	  "@zygoloid thank you for the review! I pushed your suggestion and updated PR summary",
+ 	  "thanks for the feedback. I've updated it to use an explicit type.",
+ 	  "@AaronBallman thanks for the detailed feedback. I've updated the tests to cover all the provided cases.",
+ 	  "Thanks for the feedback. I've added changes.",
+ 	  "@Fznamznon Thanks for the review. I've added a comment.",
+
 
 ]
-
 SHORT_MAX_LEN: Dict[str, int] = {"thanks": 59, "fixed": 125, "Thanks": 59, "yes": 59, "Yes": 59, "No": 59, "no":59, "Fixed": 112, "ah": 59, "oh": 59, "ok": 59, "OK": 59, "Ok": 59, "Ah": 59, "Done": 59, "done": 59, "good": 59, "Good": 59, "neat": 59, "Neat": 59, "missed": 59, "Missed": 59, "Nope": 59, "nope": 59, "Yeah": 59, "yeah": 59, "anyway": 59, "Anyway": 59, "Anyways": 59, "anyways": 59, "Ping": 59, "ping": 59, "right": 59, "please": 59, "Please": 59, "looks": 59, "Looks": 59, "follow": 59, "PR": 59, "pr": 59, "Pr": 59, "catching": 59, "working": 59, "Oh": 59, "sense": 59, "Sense": 59, "sound": 59, "sounds": 59, "bad": 59, "Bad": 59, "good.": 59, "Good.": 59, "thx": 59, "todo": 59, "ToDo": 59, "TODO": 59, "Done.": 59, "done.": 59, "apologies": 59, "I": 59, "weird": 59, "ditto": 35, "done": 59, "updated": 120, "Removed": 59, "wrong": 59, "works": 59, "Hi": 59, "hi": 59, "comment": 59, "Well": 59, "better": 59, "FIXME": 59, "Oops": 59, "copy": 59, "addressed": 59, "description": 59, "read": 59, "Thank": 59, "happens": 59, "look": 59, "already": 59, ":D": 59, "Sorry": 59, "we": 59, "comments": 59, "Not": 59, "understood": 59, "Check": 59, "agree": 59, "line": 59, "C++": 59, "C": 59, "typo": 59, "Addressed": 59, "Dead code": 59, "Forgot": 59, ":(": 59, ":)": 59, "Nice": 59, "point": 59, "Great": 59, "catch": 59, "change": 59, "better": 59, "You": 59, "Same": 59, "fine": 59, "do": 59, "do.": 59, "duplicate": 59, "@arsenm": 59, "error": 59, "logic": 59, "Indeed": 59, "Nvm": 59, "Nvm.": 59, "rid": 59, "Deleted": 59, "Deleted.": 59, "done": 59, "Yep": 59, "newline": 59, "Yeah,": 59, "problem": 59, "problem.": 59, "cases": 59, "sorry": 59, "I'll": 59, "DEPENDS": 59, "needed": 59, "helpful": 59, "helpful.": 59, "I": 59, "ACK": 59, "ACK.": 59, "finding": 59, "Accident?": 59, "Does.": 59, "release": 59, "LGTY": 59, "LGTY?": 59, "helpful": 59, "very": 59, "comment": 59, "Thanks,": 59, "Okay": 59, "Okay,": 59, "okay,": 59, "okay,": 59, "This": 59, "moved": 59, "too": 59, "Here": 59, "indeed": 59, "indeed.": 59, "beneficial": 59, "feedback": 59, "feedback!": 59, "Got": 59, "it": 59, "changed": 59, "changed.": 59, "correct.": 59, "correct": 59, "test": 59, "Indeed": 59, "Indeed,": 59, "reporting": 59, "Nice": 59, "catch!": 59, "Debugging": 59, "me.": 59, "me": 59, "adjust": 59, "oversight": 59, "Agreed": 59, "probably": 59, "that's": 59, "deasierone": 59, "resolved": 120, "Resolved": 120}
+# ───────────────────────────────────────────────────────────────────────
 
-DATA_FILE       = "preprocessed_data.json"
-OUTPUT_DIR      = "."
+# output locations
+DEBUG_DIR = "debugging_files"
+TSV_DIR   = "."
+
+DATA_FILE = "preprocessed_data.json"
+
+DROPPED_FILE = os.path.join(DEBUG_DIR, "dropped_comments.txt")
+DIFF1_FILE   = os.path.join(DEBUG_DIR, "diffs_label1.txt")   # positives
+DIFF0_FILE   = os.path.join(DEBUG_DIR, "diffs_label0.txt")   # negatives
+
 CODESPLIT       = "<CODESPLIT>"
 TRAIN_RATIO     = 0.80
 DEV_RATIO       = 0.10
 SEED            = 42
 WINDOW_SIZE     = 200
 OVERLAP         = 50
-SUGG_OVERSAMPLE = 2
+SUGG_OVERSAMPLE = 2          # stays ≥1 for training
+LENGTH_THRESHOLD = 59
 
-# length threshold for gating
-LENGTH_THRESHOLD = 59  # characters
-
-# -----------------------------------------------------------------------------
-# 1) Trivial‐comment detection
-# -----------------------------------------------------------------------------
-_TRIVIAL_PATTERNS = [
-    r"^\s*(?:lgtm|ship it|\+1)[.!]*$",
-    r"^\s*(?:thanks?|thank you)[.!]*$",
+# ───────── regex helpers (unchanged) ─────────
+_TRIVIAL_RE = [
+    re.compile(r"^\s*(?:lgtm|ship it|\+1)[.!]*$", re.I),
+    re.compile(r"^\s*(?:thanks?|thank you)[.!]*$", re.I),
 ]
-_TRIVIAL_RE = [re.compile(p, re.I) for p in _TRIVIAL_PATTERNS]
+def is_trivial(t: str) -> bool:
+    t = (t or "").strip()
+    return len(t) < 5 or not re.search(r"[A-Za-z0-9]", t) or any(p.match(t) for p in _TRIVIAL_RE)
 
-def is_trivial(text: str) -> bool:
-    txt = (text or "").strip()
-    if len(txt) < 5 or not re.search(r"[A-Za-z0-9]", txt):
-        return True
-    return any(p.match(txt) for p in _TRIVIAL_RE)
-
-
-# -----------------------------------------------------------------------------
-# 2) Generic‐comment detection via dual‐threshold + presence
-# -----------------------------------------------------------------------------
 def normalize(s: str) -> str:
     return re.sub(r"\W+", " ", s).strip().lower()
 
 GENERIC_NORMS = [normalize(p) for p in GENERIC_EXAMPLES]
-SHORT_MAX_LEN = { normalize(k): v for k, v in SHORT_MAX_LEN.items() }
+SHORT_MAX_LEN = {normalize(k): v for k, v in SHORT_MAX_LEN.items()}
+FUZZY_THRESHOLD, TYPO_THRESHOLD = 92, 80
 
-FUZZY_THRESHOLD = 92
-TYPO_THRESHOLD  = 80
-
-def is_generic(comment: str) -> bool:
-    """
-    Exact match, presence+length, typo‐mode, strict‐mode.
-    (No hedging here.)
-    """
-    c = normalize(comment)
+def is_generic(c: str) -> bool:
+    txt = normalize(c)
     for pat in GENERIC_NORMS:
         maxlen = SHORT_MAX_LEN.get(pat)
-        # (0) pure‐presence drop
-        if maxlen and pat in c.split() and len(c) <= maxlen:
+        if maxlen and pat in txt.split() and len(txt) <= maxlen:
             return True
-        # (1) exact match
-        if c == pat:
+        if txt == pat:
             return True
-
-        # prepare fuzzy scores + delta
-        score_ratio     = fuzz.ratio(c, pat)
-        score_token_set = fuzz.token_set_ratio(c, pat)
         delta = max(2, min(4, int(len(pat) * 0.2)))
-
-        # (2) typo‐mode (short)
-        if abs(len(c) - len(pat)) <= delta and score_token_set >= TYPO_THRESHOLD:
+        if abs(len(txt) - len(pat)) <= delta and \
+           fuzz.token_set_ratio(txt, pat) >= TYPO_THRESHOLD:
             return True
-
-        # (3) strict‐mode (long)
-        if len(c) > len(pat) + delta and score_ratio >= FUZZY_THRESHOLD:
+        if len(txt) > len(pat) + delta and fuzz.ratio(txt, pat) >= FUZZY_THRESHOLD:
             return True
-
     return False
 
+SUGGESTION_RE = re.compile(
+    r"\b(please|can you|ensure|should|could|recommend|consider|need to|we can|"
+    r"let'?s|remove|add|refactor|update|optimi[sz]e)\b", re.I)
+def is_suggestion(c: str) -> bool: return bool(SUGGESTION_RE.search(c))
 
-# -----------------------------------------------------------------------------
-# 3) Suggestion cues (keep non-technical but actionable)
-# -----------------------------------------------------------------------------
-SUGGESTION_PATTERNS = [
-    r"\bplease\b",
-    r"\bcan you\b",
-    r"\bensure\b",
-    r"\bshould\b",
-    r"\bcould\b",
-    r"\bmight\b",
-    r"\brecommend\b",
-    r"\bconsider\b",
-    r"\bneed to\b",
-    r"\bmakes sense\b",
-    r"\bwe can\b",
-    r"\blet'?s\b",
-    r"\bremove\b",
-    r"\badd\b",
-    r"\brefactor\b",
-    r"\bupdate\b",
-    r"\bsplit\b",
-    r"\boptimize\b",
-]
-SUGGESTION_RE = re.compile("|".join(SUGGESTION_PATTERNS), re.I)
+TECH_RE = re.compile(r"[`\w]+\.\w+|`[^`]+`|/\w+|::|\b[A-Za-z_]\w*\(\)", re.X)
+def has_technical_reference(c: str) -> bool: return bool(TECH_RE.search(c))
 
-def is_suggestion(comment: str) -> bool:
-    return bool(SUGGESTION_RE.search(comment))
+DESIGN_RE = re.compile(
+    r"\b(Is it really worth|Why can'?t|Do we need|Should we|Perhaps we should|Why not)\b", re.I)
+def is_design(c: str) -> bool: return bool(DESIGN_RE.search(c))
 
+# ───────── diff windows ─────────
+def sliding_windows(diff: str):
+    toks = diff.split()
+    if len(toks) <= WINDOW_SIZE:
+        yield 1, " ".join(toks)
+    else:
+        step = WINDOW_SIZE - OVERLAP
+        for idx, s in enumerate(range(0, len(toks), step), start=1):
+            yield idx, " ".join(toks[s:s + WINDOW_SIZE])
+            if s + WINDOW_SIZE >= len(toks):
+                break
 
-# -----------------------------------------------------------------------------
-# 4) Technical‐reference requirement
-# -----------------------------------------------------------------------------
-TECH_RE = re.compile(r"""
-    [`\w]+\.\w+        |   # foo.cpp, llvm::Foo
-    `[^`]+`            |   # `identifier`
-    /\w+               |   # /path/to/file
-    ::                 |   # C++ namespace sep
-    \b[A-Za-z_]\w*\(\)    # foo()
-""", re.X)
+# ───────── pretty writer ─────────
+def pretty(fp, tag, prn, win_idx, file_path, labels, diff_win, comment):
+    fp.write(f"===== {tag} (PR {prn} • window #{win_idx}) =====\n")
+    fp.write(f"FILE  : {file_path}\n")
+    fp.write(f"LABEL : {labels or '(none)'}\n")
+    fp.write("---------------------------------------- DIFF\n")
+    fp.write(diff_win.rstrip() + "\n")
+    fp.write("--------------- COMMENT\n")
+    fp.write(comment.strip() + "\n")
+    fp.write("============================================================\n")
 
-def has_technical_reference(comment: str) -> bool:
-    return bool(TECH_RE.search(comment))
+# ───────── debug-file handles & dedup sets ─────────
+os.makedirs(DEBUG_DIR, exist_ok=True)
+_dropped_fp = open(DROPPED_FILE, "w", encoding="utf-8")
+_diff1_fp   = open(DIFF1_FILE, "w", encoding="utf-8")
+_diff0_fp   = open(DIFF0_FILE, "w", encoding="utf-8")
+atexit.register(lambda: (_dropped_fp.close(), _diff1_fp.close(), _diff0_fp.close()))
 
-
-# -----------------------------------------------------------------------------
-# 5) Design‐cue patterns (rescue architectural/spec-level comments)
-# -----------------------------------------------------------------------------
-DESIGN_PATTERNS = [
-    r"\bIs it (?:really )?worth\b",
-    r"\bWhy can'?t\b",
-    r"\bDo we need\b",
-    r"\bShould we\b",
-    r"\bPerhaps we should\b",
-    r"\bWhy not\b",
-]
-DESIGN_RE = re.compile("|".join(DESIGN_PATTERNS), re.I)
-
-def is_design(comment: str) -> bool:
-    return bool(DESIGN_RE.search(comment))
-
-
-# -----------------------------------------------------------------------------
-# 6) Sliding windows for diffs
-# -----------------------------------------------------------------------------
-def sliding_windows(diff: str) -> List[str]:
-    tokens = diff.split()
-    if len(tokens) <= WINDOW_SIZE:
-        return [" ".join(tokens)]
-    windows = []
-    step = WINDOW_SIZE - OVERLAP
-    for start in range(0, len(tokens), step):
-        windows.append(" ".join(tokens[start:start+WINDOW_SIZE]))
-        if start + WINDOW_SIZE >= len(tokens):
-            break
-    return windows
-
-
-# -----------------------------------------------------------------------------
-# 7) Build positives with length-gated & design-cue rescue
-# -----------------------------------------------------------------------------
-def make_positives(rec: dict) -> List[Tuple[int,str,str,str,str]]:
-    positives: List[Tuple[int,str,str,str,str]] = []
-    prnum     = str(rec.get("pr_number",""))
-    fn        = rec.get("filename","")
-    labels    = rec.get("labels","")
-    diff      = (rec.get("diff_text","")     or "").strip()
-    sugg      = (rec.get("suggestion_text","") or "").strip()
-    comm      = (rec.get("comment_text","")    or "").strip()
-    commenter = rec.get("commenter","")
+_seen_drop : Set[str]            = set()
+_seen_diff1: Set[tuple]          = set()   # (prn, comment_clean)
+_seen_diff0: Set[tuple]          = set()   # (prn, comment_clean)
+# ───────── build positives ─────────
+def make_positives(rec):
+    out = []
+    prn  = str(rec.get("pr_number", ""))
+    fn   = rec.get("filename", "")
+    lbls = rec.get("labels", "")
+    diff = (rec.get("diff_text") or "").strip()
+    sugg = (rec.get("suggestion_text") or "").strip()
+    comm = (rec.get("comment_text") or "").strip()
+    commenter = rec.get("commenter", "")
 
     if not diff:
-        return positives
+        return out
 
-    prefix = f"[FILE]{fn} [LABEL]{labels} "
-    for win in sliding_windows(diff):
+    prefix = f"[FILE]{fn} [LABEL]{lbls} "
+
+    for w_idx, win in sliding_windows(diff):
         windowed = prefix + win
 
-        # A) always keep explicit suggestions
         if sugg:
             for _ in range(SUGG_OVERSAMPLE):
-                positives.append((1, prnum, commenter, windowed, sugg))
+                out.append((1, prn, commenter, windowed, sugg))
+                key = (prn, sugg.strip())
+                if key not in _seen_diff1:
+                    pretty(_diff1_fp, "POS", prn, w_idx, fn, lbls, win, sugg)
+                    _seen_diff1.add(key)
 
-        # B) comment‐based positives
         if comm and comm != sugg and not is_trivial(comm):
-            # 1) drop core generics
             if is_generic(comm):
+                clean = comm.replace("\n", " ⏎ ")
+                if clean not in _seen_drop:
+                    _dropped_fp.write(clean + "\n")
+                    _seen_drop.add(clean)
                 continue
+            if len(comm) <= LENGTH_THRESHOLD or \
+               has_technical_reference(comm) or \
+               is_suggestion(comm) or \
+               is_design(comm):
+                out.append((1, prn, commenter, windowed, comm))
+                key = (prn, comm.strip())
+                if key not in _seen_diff1:
+                    pretty(_diff1_fp, "POS", prn, w_idx, fn, lbls, win, comm)
+                    _seen_diff1.add(key)
+            else:
+                clean = comm.replace("\n", " ⏎ ")
+                if clean not in _seen_drop:
+                    _dropped_fp.write(clean + "\n")
+                    _seen_drop.add(clean)
+    return out
 
-            # 2) short comments: keep all
-            if len(comm) <= LENGTH_THRESHOLD:
-                positives.append((1, prnum, commenter, windowed, comm))
-                continue
-
-            # 3) long comments: design-cue rescue
-            if (
-                has_technical_reference(comm)
-                or is_suggestion(comm)
-                or is_design(comm)
-            ):
-                positives.append((1, prnum, commenter, windowed, comm))
-            # else: drop
-
-    return positives
-
-
-# -----------------------------------------------------------------------------
-# 8) Sample negatives
-# -----------------------------------------------------------------------------
-def sample_negatives(positives: List[Tuple[int,str,str,str,str]]) -> List[Tuple[int,str,str,str,str]]:
-    negatives: List[Tuple[int,str,str,str,str]] = []
-    idxs = list(range(len(positives)))
+# ───────── sample negatives ─────────
+def sample_negatives(pos):
+    negs, idxs = [], list(range(len(pos)))
     for i in tqdm(idxs, desc="Sampling negatives"):
-        _, pr_i, _, diff_i, _ = positives[i]
+        _, pr_i, _, diff_i, _ = pos[i]
         while True:
             j = random.choice(idxs)
-            if j != i and positives[j][1] != pr_i:
+            if j != i and pos[j][1] != pr_i:
                 break
-        _, _, commenter_j, _, text_j = positives[j]
-        negatives.append((0, pr_i, commenter_j, diff_i, text_j))
-    return negatives
+        _, _, commenter_j, _, text_j = pos[j]
+        negs.append((0, pr_i, commenter_j, diff_i, text_j))
+    return negs
 
+# ───────── TSV writer ─────────
+def write_tsv(rows, name):
+    path = os.path.join(TSV_DIR, name)
+    with open(path, "w", encoding="utf-8") as f:
+        for lbl, prn, com, diffw, commw in rows:
+            d = diffw.replace("\n", " ")
+            c = commw.replace("\n", " ")
+            f.write(f"{lbl}{CODESPLIT}{prn}{CODESPLIT}{com}"
+                    f"{CODESPLIT}{d}{CODESPLIT}{c}\n")
 
-# -----------------------------------------------------------------------------
-# 9) Write TSV
-# -----------------------------------------------------------------------------
-def write_tsv(exs: List[Tuple[int,str,str,str,str]], filename: str) -> None:
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    path = os.path.join(OUTPUT_DIR, filename)
-    with open(path, "w", encoding="utf-8") as out:
-        for lbl, prnum, commenter, diffw, commw in exs:
-            d = diffw.replace("\n"," ")
-            c = commw.replace("\n"," ")
-            out.write(f"{lbl}{CODESPLIT}{prnum}{CODESPLIT}{commenter}"
-                      f"{CODESPLIT}{d}{CODESPLIT}{c}\n")
-
-
+# ───────── main ─────────
 def main():
     random.seed(SEED)
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
+    with open(DATA_FILE, encoding="utf-8") as f:
         records = json.load(f)
-    print(f"Loaded {len(records)} records")
 
-    # build positives
-    positives: List[Tuple[int,str,str,str,str]] = []
+    positives = []
     for rec in tqdm(records, desc="Building positives"):
         positives.extend(make_positives(rec))
-    print(f"> Positives: {len(positives)}")
-
-    # sample negatives
     negatives = sample_negatives(positives)
-    print(f"> Negatives: {len(negatives)}")
 
-    # shuffle & split
-    all_ex = positives + negatives
-    random.shuffle(all_ex)
-    n_total = len(all_ex)
-    n_train = int(n_total * TRAIN_RATIO)
-    n_dev   = int(n_total * DEV_RATIO)
-    train_set = all_ex[:n_train]
-    dev_set   = all_ex[n_train:n_train+n_dev]
-    test_set  = all_ex[n_train+n_train+n_dev:]
-    print(f"> Split: {len(train_set)}/{len(dev_set)}/{len(test_set)}")
+    # pretty negatives (dedup)
+    for idx, (_, prn, _, diffw, commw) in enumerate(negatives, start=1):
+        try:
+            _, rest = diffw.split("[FILE]", 1)
+            fp, r   = rest.split(" ", 1)
+            lbl_tag, win = r.split(" ", 1)
+            lbls = lbl_tag.replace("[LABEL]", "")
+        except ValueError:
+            fp, lbls, win = "(unknown)", "", diffw
+        key = (prn, commw.strip())
+        if key not in _seen_diff0:
+            pretty(_diff0_fp, "NEG", prn, idx, fp, lbls, win, commw)
+            _seen_diff0.add(key)
 
-    # write out
-    write_tsv(train_set, "train.tsv")
-    write_tsv(dev_set,   "dev.tsv")
-    write_tsv(test_set,  "test.tsv")
-    print("✔ process_data_pr.py complete — train/dev/test ready")
+    # shuffle & split → TSVs
+    all_rows = positives + negatives
+    random.shuffle(all_rows)
+    n = len(all_rows)
+    tr, dv = int(n * TRAIN_RATIO), int(n * DEV_RATIO)
+    write_tsv(all_rows[:tr],          "train.tsv")
+    write_tsv(all_rows[tr:tr + dv],   "dev.tsv")
+    write_tsv(all_rows[tr + dv:],     "test.tsv")
+
+    print("✔ process_data_pr.py complete")
 
 if __name__ == "__main__":
     main()

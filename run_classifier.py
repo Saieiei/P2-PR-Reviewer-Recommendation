@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # coding=utf-8
 # Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team.
 # Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
@@ -33,6 +34,7 @@ from transformers import (
 from torch.optim import AdamW
 from torch.amp import autocast, GradScaler
 
+from sklearn.metrics import precision_score, recall_score  # <-- added
 from utils import compute_metrics, convert_examples_to_features, output_modes, processors
 
 logger = logging.getLogger(__name__)
@@ -212,7 +214,6 @@ def evaluate(args, model, tokenizer, checkpoint=None, prefix="", mode="dev"):
         preds = None
         out_label_ids = None
 
-        # Force tqdm bar even in non-TTY / backgrounded contexts
         for batch in tqdm(
             eval_dataloader,
             desc="Evaluating",
@@ -244,14 +245,22 @@ def evaluate(args, model, tokenizer, checkpoint=None, prefix="", mode="dev"):
         eval_loss = eval_loss / len(eval_dataloader)
         if args.output_mode == "classification":
             preds_label = np.argmax(preds, axis=1)
+
+        # compute core metrics
         result = compute_metrics(eval_task, preds_label, out_label_ids)
+
+        # --- added: compute precision & recall ----------------------------------
+        result['precision'] = precision_score(out_label_ids, preds_label, zero_division=0)
+        result['recall']    = recall_score(out_label_ids, preds_label, zero_division=0)
+        # -----------------------------------------------------------------------
+
         results.update(result)
 
         if mode == "dev":
             with open(os.path.join(eval_output_dir, "eval_results.txt"), "a+") as writer:
                 writer.write(f"evaluate {checkpoint}\n")
                 for key, value in sorted(result.items()):
-                    writer.write(f"{key} = {value}\n")
+                    writer.write(f"{key} = {value:.6f}\n")
         else:
             os.makedirs(os.path.dirname(args.test_result_dir), exist_ok=True)
             with open(args.test_result_dir, "w") as writer:
@@ -390,8 +399,6 @@ def main():
     parser.add_argument("--test_file", default="test.tsv", type=str, help="Test file")
     parser.add_argument("--pred_model_dir", default=None, type=str, help="Model dir for prediction")
     parser.add_argument("--test_result_dir", default="test_results.tsv", type=str, help="Where to write test results")
-
-    # new: number of DataLoader workers for parallel data loading
     parser.add_argument(
         "--dataloader_num_workers",
         default=4,
@@ -408,6 +415,7 @@ def main():
     # Setup distant debugging if needed
     if args.server_ip and args.server_port:
         import ptvsd
+
         print("Waiting for debugger attach")
         ptvsd.enable_attach(address=(args.server_ip, args.server_port), redirect_output=True)
         ptvsd.wait_for_attach()
