@@ -1257,7 +1257,51 @@ GENERIC_EXAMPLES: List[str] = [
  	  "@AaronBallman thanks for the detailed feedback. I've updated the tests to cover all the provided cases.",
  	  "Thanks for the feedback. I've added changes.",
  	  "@Fznamznon Thanks for the review. I've added a comment.",
-
+    "Sorry, I didn't notice that you replied to me on the issue. I only checked my previous issue after submitting the pull request. I'm very sorry. I will reopen this PR now.",
+    "I have reverted the branch and reopened this PR, thank you very much for your reply",
+    "I have modified this point. Thank you again for your suggestion. It is really necessary.",
+    "Hi, thank you very much for your suggestion. I have modified the code. You can check the latest commit. If possible, please give LGTM. Thank you.",
+    "I guess whether we want to link Support into flang-rt may need a broader discussion.  Until we sort it out, we can keep your function.",
+    "I've done something here, but I'm not sure it's exactly what we want. Let me know what you think.",
+    "I think I'm ok with it for the purposes of this patch. I may see about generating a better error that doesn't point to a spec.",
+    "@MaskRay, thank you very much for comment, I'm sorry, I tried to reproduce test fail using check-llvm but without success, may I ask                                   you for advice about how to reproduce the problem?",
+    " I'm sorry, that was some misunderstanding on my part. I created PR https://github.com/llvm/llvm-project/pull/121073, could you PTAL?",
+    "I hoped I could get away with referring to Zc, but I will update it.",
+    "I've done something here, but I'm not sure it's exactly what we want. Let me know what you think.",
+    "I'll leave the choice up to you!  Change all of them would be my preference, but I'd like consistency between the three.",
+    "Can you keep the formatting here and in the rest of the file?",
+    "I don't think it matters a lot. ill formed conveys it's a standard requirement pretty well",
+    "Though we probably don't need this warning anymore but this is really a great catch of wording issues!",
+    "Addressed in e273a996854cb3256cfeed832c3f16ff6fd0f534, thank you for the feedback!",
+    "Are these useful? The option is defaulted to true anyway right? And it's likely to land in 26 in a few weeks",
+    "I'll leave the choice up to you!  Change all of them would be my preference, but I'd like consistency between the three.",
+    "Still want this combined/generalized.  These are incredibly similar in both use and content.",
+    "will remove",
+    "Solution you suggest makes sense to me, I am OK doing it in separate patch.",
+    "Thanks, I revived this patch from an old local branch I had and went a bit fast.",
+    "The name was for debugging yes. However, it is actually the functional alias.",
+    "[ec540b6](https://github.com/llvm/llvm-project/pull/89173/commits/ec540b6f4cea6a9df180d4dcd5b54da1ec4b149f)",
+    "It should.I did test it with other changes to ensure it works properly. Somehow final cleanup (removing other stuff in the .td file) made a mistake. Fixed it now.",
+    " To be honest, I wrote this >1 year ago, so I don't really remember why I chose to do it this way. I reworked it to use a different ISD node for dynamic VGPRs, I hope it's cleaner this way.",
+    "These could use some more wrapping/reformatting.",
+    "Understood, thank you. At times wrangling tablegen to do what one wants takes an unreasonable amount of time :(",
+    " Good suggestion. I know it must be a way to simplify it and I just didn't do it yet. Will give a try later.",
+    "Agreed. I'll commit this as is and then try to replace with an IR test as a followup.",
+    "This case shouldn't happen. Ideally the verifier would reject it",
+    "I think it's before this patch. This overall is not complicated so let me add more cases here.",
+    "Right. Let me fix this case. Missed this case when changed to lookthroughCopylike",
+    "Can you explain how the coalescer is relevant here? The test only runs phi-node-elimination.",
+    " Hi Matt. Do you suggest to simplify the test code and make it smaller?",
+    "Should keep both probably",
+    "open an issue to track this https://github.com/llvm/llvm-project/issues/111205",
+    "This case still looks wrong, but we don't actually want this to ever be produced.",
+    "OK I just noticed you have approved this PR. I will commit it first and will look into VOP3 commuting opportunity later.",
+    "Could you please rebase on fresh main, this changes must be added by https://github.com/llvm/llvm-project/commit/52639d69acbed0e49fd855c8c04cd9307405e2e6",
+    
+        
+    
+        
+    
 
 ]
 SHORT_MAX_LEN: Dict[str, int] = {"thanks": 59, "fixed": 125, "Thanks": 59, "yes": 59, "Yes": 59, "No": 59, "no":59, "Fixed": 112, "ah": 59, "oh": 59, "ok": 59, "OK": 59, "Ok": 59, "Ah": 59, "Done": 59, "done": 59, "good": 59, "Good": 59, "neat": 59, "Neat": 59, "missed": 59, "Missed": 59, "Nope": 59, "nope": 59, "Yeah": 59, "yeah": 59, "anyway": 59, "Anyway": 59, "Anyways": 59, "anyways": 59, "Ping": 59, "ping": 59, "right": 59, "please": 59, "Please": 59, "looks": 59, "Looks": 59, "follow": 59, "PR": 59, "pr": 59, "Pr": 59, "catching": 59, "working": 59, "Oh": 59, "sense": 59, "Sense": 59, "sound": 59, "sounds": 59, "bad": 59, "Bad": 59, "good.": 59, "Good.": 59, "thx": 59, "todo": 59, "ToDo": 59, "TODO": 59, "Done.": 59, "done.": 59, "apologies": 59, "I": 59, "weird": 59, "ditto": 35, "done": 59, "updated": 120, "Removed": 59, "wrong": 59, "works": 59, "Hi": 59, "hi": 59, "comment": 59, "Well": 59, "better": 59, "FIXME": 59, "Oops": 59, "copy": 59, "addressed": 59, "description": 59, "read": 59, "Thank": 59, "happens": 59, "look": 59, "already": 59, ":D": 59, "Sorry": 59, "we": 59, "comments": 59, "Not": 59, "understood": 59, "Check": 59, "agree": 59, "line": 59, "C++": 59, "C": 59, "typo": 59, "Addressed": 59, "Dead code": 59, "Forgot": 59, ":(": 59, ":)": 59, "Nice": 59, "point": 59, "Great": 59, "catch": 59, "change": 59, "better": 59, "You": 59, "Same": 59, "fine": 59, "do": 59, "do.": 59, "duplicate": 59, "@arsenm": 59, "error": 59, "logic": 59, "Indeed": 59, "Nvm": 59, "Nvm.": 59, "rid": 59, "Deleted": 59, "Deleted.": 59, "done": 59, "Yep": 59, "newline": 59, "Yeah,": 59, "problem": 59, "problem.": 59, "cases": 59, "sorry": 59, "I'll": 59, "DEPENDS": 59, "needed": 59, "helpful": 59, "helpful.": 59, "I": 59, "ACK": 59, "ACK.": 59, "finding": 59, "Accident?": 59, "Does.": 59, "release": 59, "LGTY": 59, "LGTY?": 59, "helpful": 59, "very": 59, "comment": 59, "Thanks,": 59, "Okay": 59, "Okay,": 59, "okay,": 59, "okay,": 59, "This": 59, "moved": 59, "too": 59, "Here": 59, "indeed": 59, "indeed.": 59, "beneficial": 59, "feedback": 59, "feedback!": 59, "Got": 59, "it": 59, "changed": 59, "changed.": 59, "correct.": 59, "correct": 59, "test": 59, "Indeed": 59, "Indeed,": 59, "reporting": 59, "Nice": 59, "catch!": 59, "Debugging": 59, "me.": 59, "me": 59, "adjust": 59, "oversight": 59, "Agreed": 59, "probably": 59, "that's": 59, "deasierone": 59, "resolved": 120, "Resolved": 120}
