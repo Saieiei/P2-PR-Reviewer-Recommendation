@@ -1297,6 +1297,8 @@ GENERIC_EXAMPLES: List[str] = [
     "This case still looks wrong, but we don't actually want this to ever be produced.",
     "OK I just noticed you have approved this PR. I will commit it first and will look into VOP3 commuting opportunity later.",
     "Could you please rebase on fresh main, this changes must be added by https://github.com/llvm/llvm-project/commit/52639d69acbed0e49fd855c8c04cd9307405e2e6",
+    "hopefully the latest commit has the use case youre looking for",
+    "Ah, okay, I think there's a small tweak to the example and I'll be happy. I'll suggest it below.",
     
         
     
