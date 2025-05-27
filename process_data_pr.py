@@ -1299,6 +1299,7 @@ GENERIC_EXAMPLES: List[str] = [
     "Could you please rebase on fresh main, this changes must be added by https://github.com/llvm/llvm-project/commit/52639d69acbed0e49fd855c8c04cd9307405e2e6",
     "hopefully the latest commit has the use case youre looking for",
     "Ah, okay, I think there's a small tweak to the example and I'll be happy. I'll suggest it below.",
+	"It always good to take rather than leave ;) I haven't got used to this syntax and I'd leave it :(",
     
         
     
@@ -1361,7 +1362,7 @@ def is_generic(c: str) -> bool:
     return False
 
 SUGGESTION_RE = re.compile(
-    r"\b(please|can you|ensure|should|could|recommend|consider|need to|we can|"
+    r"\b(please|can you|ensure|should|could|recommend|consider|need to|we can|can|"
     r"let'?s|remove|add|refactor|update|optimi[sz]e)\b", re.I)
 def is_suggestion(c: str) -> bool: return bool(SUGGESTION_RE.search(c))
 

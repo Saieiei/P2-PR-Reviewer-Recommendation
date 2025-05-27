@@ -256,7 +256,7 @@ def main():
             break
 
         try:
-            res = retrieve(diff, args.top_k * 8, fname)   # fetch extra → survives dedup
+            res = retrieve(diff, args.top_k * 10, fname)   # fetch extra → survives dedup
         except RuntimeError as e:
             print(e); break
 
@@ -303,4 +303,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
