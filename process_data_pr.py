@@ -1281,6 +1281,7 @@ GENERIC_EXAMPLES: List[str] = [
     "Thanks, I revived this patch from an old local branch I had and went a bit fast.",
     "The name was for debugging yes. However, it is actually the functional alias.",
     "[ec540b6](https://github.com/llvm/llvm-project/pull/89173/commits/ec540b6f4cea6a9df180d4dcd5b54da1ec4b149f)",
+	"Done in [3de3561](https://github.com/llvm/llvm-project/pull/115094/commits/3de3561f6c6e4e73ae1f5cda3a27a6aff5bf9904). Thanks",
     "It should.I did test it with other changes to ensure it works properly. Somehow final cleanup (removing other stuff in the .td file) made a mistake. Fixed it now.",
     " To be honest, I wrote this >1 year ago, so I don't really remember why I chose to do it this way. I reworked it to use a different ISD node for dynamic VGPRs, I hope it's cleaner this way.",
     "These could use some more wrapping/reformatting.",
@@ -1300,6 +1301,14 @@ GENERIC_EXAMPLES: List[str] = [
     "hopefully the latest commit has the use case youre looking for",
     "Ah, okay, I think there's a small tweak to the example and I'll be happy. I'll suggest it below.",
 	"It always good to take rather than leave ;) I haven't got used to this syntax and I'd leave it :(",
+	"Agree with this comment, otherwise this change looks fine to me.",
+	"I think I have removed that -- let me know if there's other places I have to edit",
+	"I believe I resolved this with the merging of diag messages, but I am not exactly sure what you mean. Please let me know if I misunderstood.",
+	"Good catch! I wonder why this does not affect any test or program.",
+	"I think you are right, doing nothing does lead to confusion, I will add this, thanks for the suggestion",
+	"//",
+	"EDIT: Not here, but to the other comment about testing this in the regression tests xD",
+	"Thank you for catching that.  I meant to remove that comment as the thing it was referring to has been fixed.  I'll clean it up now.",
     
         
     
